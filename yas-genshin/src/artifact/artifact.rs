@@ -96,6 +96,8 @@ pub enum ArtifactSetName {
     ObsidianCodex,
     LongNightsOath,
     FinaleOfTheDeepGalleries,
+    SongOfTheSpunMoon,
+    NightOfFirmamentsManifestation,
 }
 
 #[derive(Debug, Clone)]
@@ -442,6 +444,8 @@ impl ArtifactSetName {
             "诸圣的礼冠" | "灵髓的根脉" | "异种的期许" | "夜域的迷思" | "纷争的前宴" => Some(ArtifactSetName::ObsidianCodex),
             "深廊的遂失之冕" | "深廊的漫远之约" | "深廊的回奏之歌" | "深廊的湮落之刻" | "深廊的饫赐之宴" => Some(ArtifactSetName::LongNightsOath),
             "被浸染的缨盔" | "夜鸣莺的尾羽" | "执灯人的誓词" | "不死者的哀铃" | "未吹响的号角" => Some(ArtifactSetName::FinaleOfTheDeepGalleries),
+            "流离者的晶泪" | "受福者的白羽" | "祭霜者的迷狂" | "至纯者的欢荣" | "司信者的圣冕" => Some(ArtifactSetName::SongOfTheSpunMoon),
+            "渴真之花" | "深罪之羽" | "谕告之钟" | "满溢之壶" | "永劫之冕" => Some(ArtifactSetName::NightOfFirmamentsManifestation),
             _ => None,
         }
     }
@@ -711,6 +715,16 @@ impl ArtifactSlot {
             "深廊的回奏之歌" => Some(ArtifactSlot::Flower),
             "深廊的湮落之刻" => Some(ArtifactSlot::Sand),
             "深廊的饫赐之宴" => Some(ArtifactSlot::Goblet),
+            "流离者的晶泪" => Some(ArtifactSlot::Flower),
+            "受福者的白羽" => Some(ArtifactSlot::Feather),
+            "祭霜者的迷狂" => Some(ArtifactSlot::Sand),
+            "至纯者的欢荣" => Some(ArtifactSlot::Goblet),
+            "司信者的圣冕" => Some(ArtifactSlot::Head),
+            "渴真之花" => Some(ArtifactSlot::Flower),
+            "深罪之羽" => Some(ArtifactSlot::Feather),
+            "谕告之钟" => Some(ArtifactSlot::Sand),
+            "满溢之壶" => Some(ArtifactSlot::Goblet),
+            "永劫之冕" => Some(ArtifactSlot::Head),
             _ => None,
         }
     }
