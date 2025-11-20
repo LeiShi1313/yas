@@ -51,14 +51,23 @@ jobs:
               $pattern.Replace((Get-Content -Raw $file), "0.0.0-$env:GIT_REV", 1) | Out-File -FilePath $file
           }
 
-      - name: Build (Release)
-        run: cargo build --release
+      - name: Build Genshin Scanner
+        run: cargo build --release --bin yas_artifact
+
+      - name: Build Star Rail Scanner
+        run: cargo build --release --bin yas_relic
+
+      - name: Build Unified Scanner (Optional)
+        continue-on-error: true
+        run: cargo build --release --bin yas
 
       - name: Rename Outputs
         run: |
           Move-Item ./target/release/yas_artifact.exe "yas_artifact_$env:GIT_REV.exe"
           Move-Item ./target/release/yas_relic.exe "yas_relic_$env:GIT_REV.exe"
-          Move-Item ./target/release/yas.exe "yas_$env:GIT_REV.exe"
+          if (Test-Path ./target/release/yas.exe) {
+            Move-Item ./target/release/yas.exe "yas_$env:GIT_REV.exe"
+          }
 
       - name: Upload yas_artifact
         uses: actions/upload-artifact@v4
@@ -73,6 +82,7 @@ jobs:
           path: yas_relic_${{ env.GIT_REV }}.exe
       
       - name: Upload yas
+        if: hashFiles('yas_${{ env.GIT_REV }}.exe') != ''
         uses: actions/upload-artifact@v4
         with:
           name: yas_${{ env.GIT_REV }}
