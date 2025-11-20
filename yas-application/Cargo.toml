@@ -6,12 +6,18 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 yas = { path = "../yas" , package = "yas_core" }
-yas_genshin = { path = "../yas-genshin", package = "yas_scanner_genshin" }
-yas_starrail = { path = "../yas-starrail", package = "yas_scanner_starrail" }
-yas-wutheringwaves = { path = "../yas-wutheringwaves" }
+yas_genshin = { path = "../yas-genshin", package = "yas_scanner_genshin", optional = true }
+yas_starrail = { path = "../yas-starrail", package = "yas_scanner_starrail", optional = true }
+yas-wutheringwaves = { path = "../yas-wutheringwaves", optional = true }
 clap = { version = "4.4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
+
+[features]
+default = ["genshin", "starrail", "wutheringwaves"]
+genshin = ["yas_genshin"]
+starrail = ["yas_starrail"]
+wutheringwaves = ["yas-wutheringwaves"]
 
 [build-dependencies]
 winres = "0.1"
@@ -24,17 +30,19 @@ winres = "0.1"
 [[bin]]
 name = "yas"
 path = "src/bin/yas.rs"
-# build = "build.rs"
+required-features = ["genshin", "starrail", "wutheringwaves"]
 
 [[bin]]
 name = "yas_artifact"
 path = "src/bin/yas_artifact.rs"
-# build = "build.rs"
+required-features = ["genshin"]
 
 [[bin]]
 name = "yas_relic"
 path = "src/bin/yas_relic.rs"
+required-features = ["starrail"]
 
 [[bin]]
 name = "yas_ww_echo"
 path = "src/bin/yas_ww_echo.rs"
+required-features = ["wutheringwaves"]

@@ -18,12 +18,16 @@ jobs:
         scanner:
           - name: yas_artifact
             display: Genshin Impact
+            features: genshin
           - name: yas_relic
             display: Star Rail
+            features: starrail
           - name: yas_ww_echo
             display: Wuthering Waves
+            features: wutheringwaves
           - name: yas
             display: Unified
+            features: genshin,starrail,wutheringwaves
 
     name: Build ${{ matrix.scanner.display }}
 
@@ -57,7 +61,7 @@ jobs:
           }
 
       - name: Build ${{ matrix.scanner.display }} Scanner
-        run: cargo build --release --bin ${{ matrix.scanner.name }}
+        run: cargo build --release --bin ${{ matrix.scanner.name }} --no-default-features --features ${{ matrix.scanner.features }}
 
       - name: Rename Output
         run: Move-Item ./target/release/${{ matrix.scanner.name }}.exe "${{ matrix.scanner.name }}_$env:GIT_REV.exe"
