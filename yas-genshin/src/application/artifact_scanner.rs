@@ -1,7 +1,7 @@
-use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::Result;
 use clap::{command, ArgMatches, Args};
-use log::info;
+use log::{info, warn};
 
 use yas::export::{AssetEmitter, ExportAssets};
 use yas::game_info::{GameInfo, GameInfoBuilder};
@@ -19,7 +19,7 @@ pub struct ArtifactScannerApplication {
 impl ArtifactScannerApplication {
     pub fn new(matches: ArgMatches) -> Self {
         ArtifactScannerApplication {
-            arg_matches: matches
+            arg_matches: matches,
         }
     }
 
@@ -79,13 +79,22 @@ impl ArtifactScannerApplication {
         let mut scanner = GenshinArtifactScanner::from_arg_matches(
             &window_info_repository,
             arg_matches,
-            game_info.clone()
+            game_info.clone(),
         )?;
 
+        let catalog = scanner.catalog();
         let result = scanner.scan()?;
         let artifacts = result
             .iter()
-            .flat_map(GenshinArtifact::try_from)
+            .filter_map(
+                |scan| match GenshinArtifact::from_scan_result(scan, &catalog) {
+                    Ok(artifact) => Some(artifact),
+                    Err(()) => {
+                        warn!("无法解析圣遗物 `{}`，保留在原始扫描日志中", scan.name);
+                        None
+                    },
+                },
+            )
             .collect::<Vec<_>>();
 
         let exporter = GenshinArtifactExporter::new(arg_matches, &artifacts)?;

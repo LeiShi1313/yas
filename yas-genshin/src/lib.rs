@@ -2,9 +2,8 @@
 #![feature(fn_traits)]
 #![feature(stmt_expr_attributes)]
 
-pub mod scanner_controller;
+pub mod application;
+pub mod artifact;
 pub mod export;
 pub mod scanner;
-pub mod artifact;
-pub mod character;
-pub mod application;
+pub mod scanner_controller;

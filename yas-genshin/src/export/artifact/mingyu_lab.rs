@@ -31,7 +31,7 @@ impl<'a> Serialize for MingyuLabArtifact<'a> {
 
         let artifact = &self.artifact;
         let mut root = serializer.serialize_map(Some(13))?;
-        root.serialize_entry("asKey", artifact.set_name.to_mingyu_lab())?;
+        root.serialize_entry("asKey", &artifact.set_name.to_mingyu_lab())?;
         root.serialize_entry("rarity", &artifact.star)?;
         root.serialize_entry("slot", artifact.slot.to_mingyu_lab())?;
         root.serialize_entry("level", &artifact.level)?;
@@ -87,69 +87,32 @@ impl ArtifactSlot {
 }
 
 impl ArtifactSetName {
-    pub fn to_mingyu_lab(&self) -> &'static str {
-        match self {
-            ArtifactSetName::ArchaicPetra => "archaic_petra",
-            ArtifactSetName::HeartOfDepth => "heart_of_depth",
-            ArtifactSetName::BlizzardStrayer => "blizzard_walker",
-            ArtifactSetName::RetracingBolide => "retracing_bolide",
-            ArtifactSetName::NoblesseOblige => "noblesse_oblige",
-            ArtifactSetName::GladiatorFinale => "gladiators_finale",
-            ArtifactSetName::MaidenBeloved => "maiden_beloved",
-            ArtifactSetName::ViridescentVenerer => "viridescent_venerer",
-            ArtifactSetName::LavaWalker => "lavawalker",
-            ArtifactSetName::CrimsonWitch => "crimson_witch_of_flames",
-            ArtifactSetName::ThunderSmoother => "thundersoother",
-            ArtifactSetName::ThunderingFury => "thundering_fury",
-            ArtifactSetName::BloodstainedChivalry => "bloodstained_chivalry",
-            ArtifactSetName::WandererTroupe => "wanderers_troupe",
-            ArtifactSetName::Scholar => "scholar",
-            ArtifactSetName::Gambler => "gambler",
-            ArtifactSetName::TinyMiracle => "tiny_miracle",
-            ArtifactSetName::MartialArtist => "martial_artist",
-            ArtifactSetName::BraveHeart => "brave_heart",
-            ArtifactSetName::ResolutionOfSojourner => "resolution_of_sojourner",
-            ArtifactSetName::DefenderWill => "defenders_will",
-            ArtifactSetName::Berserker => "berserker",
-            ArtifactSetName::Instructor => "instructor",
-            ArtifactSetName::Exile => "the_exile",
-            ArtifactSetName::PrayersForWisdom => "prayers_of_wisdom",
-            ArtifactSetName::PrayersToSpringtime => "prayers_of_springtime",
-            ArtifactSetName::PrayersForIllumination => "prayers_of_illumination",
-            ArtifactSetName::PrayersForDestiny => "prayers_of_destiny",
-            ArtifactSetName::PaleFlame => "pale_flame",
-            ArtifactSetName::TenacityOfTheMillelith => "tenacity_of_the_millelith",
-            ArtifactSetName::EmblemOfSeveredFate => "seal_of_insulation",
-            ArtifactSetName::ShimenawaReminiscence => "reminiscence_of_shime",
-            ArtifactSetName::HuskOfOpulentDreams => "husk_of_opulent_dreams",
-            ArtifactSetName::OceanHuedClam => "divine_chorus",
-            ArtifactSetName::VermillionHereafter => "vermillion_hereafter",
-            ArtifactSetName::EchoesOfAnOffering => "echoes_of_an_offering",
-            ArtifactSetName::DeepwoodMemories => "deepwood_memories",
-            ArtifactSetName::GildedDreams => "gilded_dreams",
-            ArtifactSetName::FlowerOfParadiseLost => "flower_of_paradise_list",
-            ArtifactSetName::DesertPavilionChronicle => "desert_pavilion_chronicle",
-            ArtifactSetName::NymphsDream => "nymphs_dream",
-            ArtifactSetName::VourukashasGlow => "vourukashas_glow",
-            ArtifactSetName::MarechausseeHunter => "hunter",
-            ArtifactSetName::GoldenTroupe => "golden_troupe",
-            ArtifactSetName::SongOfDaysPast => "song_of_days_past",
-            ArtifactSetName::NighttimeWhispersInTheEchoingWoods => "nighttime_whispers_in_the_echoing_woods",
-            ArtifactSetName::FragmentOfHarmonicWhimsy => "fragment_of_harmonic_whimsy",
-            ArtifactSetName::UnfinishedReverie => "unfinished_reverie",
-            ArtifactSetName::ScrollOfTheHeroOfCinderCity => "scroll_of_the_hero_of_cinder_city",
-            ArtifactSetName::ObsidianCodex => "obsidian_codex",
-            ArtifactSetName::FinaleOfTheDeepGalleries => "finale_of_the_deep_galleries",
-            ArtifactSetName::LongNightsOath => "long_nights_oath",
-            ArtifactSetName::SongOfTheSpunMoon => "song_of_the_spun_moon",
-            ArtifactSetName::NightOfFirmamentsManifestation => "night_of_firmaments_manifestation",
-
-            // Not supported by Mingyulab
-            ArtifactSetName::Adventurer => unreachable!(),
-            ArtifactSetName::LuckyDog => unreachable!(),
-            ArtifactSetName::TravelingDoctor => unreachable!(),
+    pub fn to_mingyu_lab(&self) -> String {
+        match self.good_key() {
+            "BlizzardStrayer" => "blizzard_walker".to_string(),
+            "EmblemOfSeveredFate" => "seal_of_insulation".to_string(),
+            "ShimenawasReminiscence" => "reminiscence_of_shime".to_string(),
+            "OceanHuedClam" => "divine_chorus".to_string(),
+            "MarechausseeHunter" => "hunter".to_string(),
+            "FlowerOfParadiseLost" => "flower_of_paradise_list".to_string(),
+            "PrayersForDestiny" => "prayers_of_destiny".to_string(),
+            "PrayersForIllumination" => "prayers_of_illumination".to_string(),
+            "PrayersForWisdom" => "prayers_of_wisdom".to_string(),
+            "PrayersToSpringtime" => "prayers_of_springtime".to_string(),
+            key => camel_to_snake(key),
         }
     }
+}
+
+fn camel_to_snake(value: &str) -> String {
+    let mut result = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index > 0 && ch.is_ascii_uppercase() {
+            result.push('_');
+        }
+        result.extend(ch.to_lowercase());
+    }
+    result
 }
 
 pub struct MingyuLabFormat<'a> {
@@ -157,13 +120,14 @@ pub struct MingyuLabFormat<'a> {
 }
 
 impl<'a> MingyuLabFormat<'a> {
-    pub fn new(results: &'a [GenshinArtifact]) -> MingyuLabFormat {
+    pub fn new(results: &'a [GenshinArtifact]) -> MingyuLabFormat<'a> {
         let artifacts: Vec<MingyuLabArtifact<'a>> = results
             .iter()
             .filter(|artifact| {
-                artifact.set_name != ArtifactSetName::Adventurer
-                    && artifact.set_name != ArtifactSetName::LuckyDog
-                    && artifact.set_name != ArtifactSetName::TravelingDoctor
+                !matches!(
+                    artifact.set_name.good_key(),
+                    "Adventurer" | "LuckyDog" | "TravelingDoctor"
+                )
             })
             .map(|artifact| MingyuLabArtifact { artifact })
             .collect();
@@ -177,5 +141,31 @@ impl Serialize for MingyuLabFormat<'_> {
         S: Serializer,
     {
         self.artifacts.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::artifact::ArtifactCatalog;
+
+    #[test]
+    fn preserves_legacy_mingyu_set_aliases() {
+        let catalog = ArtifactCatalog::embedded().unwrap();
+        assert_eq!(
+            catalog
+                .find_piece(&["祭水礼冠"])
+                .unwrap()
+                .set_name
+                .to_mingyu_lab(),
+            "prayers_of_destiny"
+        );
+        assert_eq!(
+            catalog
+                .find_piece(&["月女的华彩"])
+                .unwrap()
+                .set_name
+                .to_mingyu_lab(),
+            "flower_of_paradise_list"
+        );
     }
 }

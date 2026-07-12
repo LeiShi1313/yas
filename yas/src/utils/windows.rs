@@ -168,6 +168,14 @@ pub fn show_window_and_set_foreground(hwnd: HWND) {
     }
 }
 
+pub fn is_foreground_window(window_handle: isize) -> bool {
+    unsafe { GetForegroundWindow() as isize == window_handle }
+}
+
+pub fn restore_foreground_window(window_handle: isize) {
+    show_window_and_set_foreground(window_handle as HWND);
+}
+
 unsafe fn iterate_window_unsafe() -> Vec<HWND> {
     static mut ALL_HANDLES: Vec<HWND> = Vec::new();
 

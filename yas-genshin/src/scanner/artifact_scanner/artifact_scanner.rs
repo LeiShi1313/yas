@@ -1,23 +1,34 @@
-use std::{cell::RefCell, ops::{Coroutine, CoroutineState}, pin::Pin, rc::Rc, sync::mpsc::{self, Sender}, time::SystemTime};
+use std::{
+    cell::RefCell,
+    ops::{Coroutine, CoroutineState},
+    path::Path,
+    pin::Pin,
+    rc::Rc,
+    sync::{
+        mpsc::{self, Sender},
+        Arc,
+    },
+    time::SystemTime,
+};
 
 use anyhow::Result;
 use clap::FromArgMatches;
 use image::RgbImage;
-use log::{error, info};
+use log::info;
 
 use yas::capture::{Capturer, GenericCapturer};
 use yas::game_info::GameInfo;
-use yas::ocr::{ImageToText, yas_ocr_model};
+use yas::ocr::{yas_ocr_model, ImageToText};
 use yas::positioning::Pos;
 use yas::window_info::FromWindowInfoRepository;
 use yas::window_info::WindowInfoRepository;
 
-use crate::{scanner::artifact_scanner::artifact_scanner_worker::ArtifactScannerWorker};
+use crate::artifact::ArtifactCatalog;
+use crate::scanner::artifact_scanner::artifact_scanner_worker::ArtifactScannerWorker;
 use crate::scanner::artifact_scanner::message_items::SendItem;
 use crate::scanner::artifact_scanner::scan_result::GenshinArtifactScanResult;
 use crate::scanner_controller::repository_layout::{
-    GenshinRepositoryScanController,
-    GenshinRepositoryScannerLogicConfig,
+    GenshinRepositoryScanController, GenshinRepositoryScannerLogicConfig,
     ReturnResult as GenshinRepositoryControllerReturnResult,
 };
 
@@ -36,6 +47,7 @@ pub struct GenshinArtifactScanner {
     window_info: ArtifactScannerWindowInfo,
     game_info: GameInfo,
     image_to_text: Box<dyn ImageToText<RgbImage> + Send>,
+    catalog: Arc<ArtifactCatalog>,
     controller: Rc<RefCell<GenshinRepositoryScanController>>,
     capturer: Rc<dyn Capturer<RgbImage>>,
 }
@@ -47,14 +59,71 @@ impl GenshinArtifactScanner {
 // constructor
 impl GenshinArtifactScanner {
     fn get_image_to_text() -> Result<Box<dyn ImageToText<RgbImage> + Send>> {
-        let model: Box<dyn ImageToText<RgbImage> + Send> = Box::new(
-            yas_ocr_model!("./models/model_training.onnx", "./models/index_2_word.json")?
-        );
+        let model: Box<dyn ImageToText<RgbImage> + Send> = Box::new(yas_ocr_model!(
+            "./models/model_training.onnx",
+            "./models/index_2_word.json"
+        )?);
         Ok(model)
     }
 
     fn get_capturer() -> Result<Rc<dyn Capturer<RgbImage>>> {
         Ok(Rc::new(GenericCapturer::new()?))
+    }
+
+    pub fn probe_current(
+        window_info_repo: &WindowInfoRepository,
+        config: GenshinArtifactScannerConfig,
+        game_info: GameInfo,
+        panel_output: Option<&Path>,
+    ) -> Result<(GenshinArtifactScanResult, RgbImage)> {
+        let window_info = ArtifactScannerWindowInfo::from_window_info_repository(
+            game_info.window.to_rect_usize().size(),
+            game_info.ui,
+            game_info.platform,
+            window_info_repo,
+        )?;
+        let capturer = Self::get_capturer()?;
+        let panel_image = capturer.capture_relative_to(
+            window_info.panel_rect.to_rect_i32(),
+            game_info.window.origin(),
+        )?;
+        if let Some(path) = panel_output {
+            panel_image.save(path)?;
+        }
+
+        let star_pos = Pos {
+            x: game_info.window.left + window_info.star_pos.x as i32,
+            y: game_info.window.top + window_info.star_pos.y as i32,
+        };
+        let star_color = capturer.capture_color(star_pos)?;
+        let star_colors = [
+            image::Rgb([113, 119, 139]),
+            image::Rgb([42, 143, 114]),
+            image::Rgb([81, 127, 203]),
+            image::Rgb([161, 86, 224]),
+            image::Rgb([188, 105, 50]),
+        ];
+        let star = star_colors
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, color)| color_distance(color, &star_color))
+            .map(|(index, _)| index + 1)
+            .unwrap_or(1);
+
+        let catalog = Arc::new(ArtifactCatalog::load(
+            config.artifact_catalog.as_deref(),
+            !config.no_catalog_update,
+        )?);
+        let worker = ArtifactScannerWorker::new(window_info, config, catalog)?;
+        let result = worker.scan_single(
+            SendItem {
+                panel_image: panel_image.clone(),
+                star,
+                list_image: None,
+            },
+            false,
+        )?;
+        Ok((result, panel_image))
     }
 
     pub fn new(
@@ -63,6 +132,10 @@ impl GenshinArtifactScanner {
         controller_config: GenshinRepositoryScannerLogicConfig,
         game_info: GameInfo,
     ) -> Result<Self> {
+        let catalog = Arc::new(ArtifactCatalog::load(
+            config.artifact_catalog.as_deref(),
+            !config.no_catalog_update,
+        )?);
         Ok(Self {
             scanner_config: config,
             window_info: ArtifactScannerWindowInfo::from_window_info_repository(
@@ -71,11 +144,15 @@ impl GenshinArtifactScanner {
                 game_info.platform,
                 window_info_repo,
             )?,
-            controller: Rc::new(RefCell::new(
-                GenshinRepositoryScanController::new(window_info_repo, controller_config, game_info.clone(), true)?
-            )),
+            controller: Rc::new(RefCell::new(GenshinRepositoryScanController::new(
+                window_info_repo,
+                controller_config,
+                game_info.clone(),
+                true,
+            )?)),
             game_info,
             image_to_text: Self::get_image_to_text()?,
+            catalog,
             // item count will be set later, once the scan starts
             capturer: Self::get_capturer()?,
         })
@@ -86,6 +163,11 @@ impl GenshinArtifactScanner {
         arg_matches: &clap::ArgMatches,
         game_info: GameInfo,
     ) -> Result<Self> {
+        let scanner_config = GenshinArtifactScannerConfig::from_arg_matches(arg_matches)?;
+        let catalog = Arc::new(ArtifactCatalog::load(
+            scanner_config.artifact_catalog.as_deref(),
+            !scanner_config.no_catalog_update,
+        )?);
         let window_info = ArtifactScannerWindowInfo::from_window_info_repository(
             game_info.window.to_rect_usize().size(),
             game_info.ui,
@@ -93,19 +175,39 @@ impl GenshinArtifactScanner {
             window_info_repo,
         )?;
         Ok(GenshinArtifactScanner {
-            scanner_config: GenshinArtifactScannerConfig::from_arg_matches(arg_matches)?,
+            scanner_config,
             window_info,
             controller: Rc::new(RefCell::new(
-                GenshinRepositoryScanController::from_arg_matches(window_info_repo, arg_matches, game_info.clone(), true)?
+                GenshinRepositoryScanController::from_arg_matches(
+                    window_info_repo,
+                    arg_matches,
+                    game_info.clone(),
+                    true,
+                )?,
             )),
             game_info,
             image_to_text: Self::get_image_to_text()?,
+            catalog,
             capturer: Self::get_capturer()?,
         })
     }
 }
 
 impl GenshinArtifactScanner {
+    pub fn catalog(&self) -> Arc<ArtifactCatalog> {
+        Arc::clone(&self.catalog)
+    }
+
+    pub fn set_restore_focus(&mut self, restore_focus: bool) {
+        self.controller
+            .borrow_mut()
+            .set_restore_focus(restore_focus);
+    }
+
+    pub fn captured_count(&self) -> usize {
+        self.controller.borrow().scanned_count()
+    }
+
     pub fn capture_panel(&self) -> Result<RgbImage> {
         self.capturer.capture_relative_to(
             self.window_info.panel_rect.to_rect_i32(),
@@ -181,32 +283,65 @@ impl GenshinArtifactScanner {
         let worker = ArtifactScannerWorker::new(
             self.window_info.clone(),
             self.scanner_config.clone(),
+            Arc::clone(&self.catalog),
         )?;
 
         let join_handle = worker.run(rx);
         info!("Worker created");
 
-        self.send(&tx, count);
+        let send_result = self.send(&tx, count);
 
         match tx.send(None) {
             Ok(_) => info!("扫描结束，等待识别线程结束，请勿关闭程序"),
             Err(_) => info!("扫描结束，识别已完成"),
         }
 
-        match join_handle.join() {
-            Ok(v) => {
+        let worker_result = match join_handle.join() {
+            Ok(output) => {
                 info!("识别耗时: {:?}", now.elapsed()?);
+
+                if !output.errors.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "{} of {} captured artifact panels failed OCR: {}",
+                        output.errors.len(),
+                        self.captured_count(),
+                        output.errors.iter().take(10).cloned().collect::<Vec<_>>().join("; ")
+                    ));
+                }
 
                 // filter min level
                 let min_level = self.scanner_config.min_level;
-                let v = v.iter().filter(|a| {
-                    a.level >= min_level
-                }).cloned().collect();
+                let v = output
+                    .results
+                    .iter()
+                    .filter(|a| a.level >= min_level)
+                    .cloned()
+                    .collect();
 
                 Ok(v)
-            }
+            },
             Err(_) => Err(anyhow::anyhow!("识别线程出现错误")),
-        }
+        };
+        send_result?;
+        worker_result
+    }
+
+    pub fn capture_only(&mut self) -> Result<usize> {
+        let (tx, rx) = mpsc::channel::<Option<SendItem>>();
+        let count = self.get_item_count()?;
+        let drain = std::thread::spawn(move || {
+            while let Ok(item) = rx.recv() {
+                if item.is_none() {
+                    break;
+                }
+            }
+        });
+
+        let send_result = self.send(&tx, count);
+        let _ = tx.send(None);
+        let _ = drain.join();
+        send_result?;
+        Ok(self.captured_count())
     }
 
     fn is_page_first_artifact(&self, cur_index: i32) -> bool {
@@ -235,16 +370,18 @@ impl GenshinArtifactScanner {
         }
     }
 
-    fn send(&mut self, tx: &Sender<Option<SendItem>>, count: i32) {
-        let mut generator = GenshinRepositoryScanController::get_generator(self.controller.clone(), count as usize);
+    fn send(&mut self, tx: &Sender<Option<SendItem>>, count: i32) -> Result<()> {
+        let mut generator =
+            GenshinRepositoryScanController::get_generator(self.controller.clone(), count as usize);
         let mut artifact_index: i32 = 0;
 
         loop {
             let pinned_generator = Pin::new(&mut generator);
             match pinned_generator.resume(()) {
                 CoroutineState::Yielded(_) => {
-                    let image = self.capture_panel().unwrap();
-                    let star = self.get_star().unwrap();
+                    self.controller.borrow().ensure_game_foreground()?;
+                    let image = self.capture_panel()?;
+                    let star = self.get_star()?;
 
                     let list_image = if self.is_page_first_artifact(artifact_index) {
                         let origin = self.game_info.window;
@@ -256,13 +393,13 @@ impl GenshinArtifactScanner {
                         let top = (origin.top as f64
                             + margin.y
                             + (gap.height + size.height)
-                            * self.get_start_row(count, artifact_index) as f64)
+                                * self.get_start_row(count, artifact_index) as f64)
                             as i32;
                         let width = (origin.width as f64 - margin.x) as i32;
                         let height = (origin.height as f64
                             - margin.y
                             - (gap.height + size.height)
-                            * self.get_start_row(count, artifact_index) as f64)
+                                * self.get_start_row(count, artifact_index) as f64)
                             as i32;
 
                         let game_image = self
@@ -273,12 +410,11 @@ impl GenshinArtifactScanner {
                                 width,
                                 height,
                             })
-                            .unwrap();
+                            ?;
                         Some(game_image)
                     } else {
                         None
                     };
-
 
                     artifact_index = artifact_index + 1;
 
@@ -303,21 +439,22 @@ impl GenshinArtifactScanner {
                     }
 
                     // scanned_count += 1;
-                }
+                },
                 CoroutineState::Complete(result) => {
                     match result {
-                        Err(e) => error!("扫描发生错误：{}", e),
-                        Ok(value) => {
-                            match value {
-                                GenshinRepositoryControllerReturnResult::Interrupted => info!("用户中断"),
-                                GenshinRepositoryControllerReturnResult::Finished => ()
-                            }
-                        }
+                        Err(e) => return Err(e),
+                        Ok(value) => match value {
+                            GenshinRepositoryControllerReturnResult::Interrupted => {
+                                info!("用户中断")
+                            },
+                            GenshinRepositoryControllerReturnResult::Finished => (),
+                        },
                     }
 
                     break;
-                }
+                },
             }
         }
+        Ok(())
     }
 }

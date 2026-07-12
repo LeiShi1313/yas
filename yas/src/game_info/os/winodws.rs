@@ -80,6 +80,7 @@ pub fn get_game_info(window_names: &[&str]) -> Result<GameInfo> {
 
     Ok(GameInfo {
         window: rect,
+        window_handle: hwnd as isize,
         resolution_family: resolution_family.unwrap(),
         is_cloud,
         ui: UI::Desktop,

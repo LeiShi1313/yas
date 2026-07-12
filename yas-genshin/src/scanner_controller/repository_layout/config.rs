@@ -1,5 +1,3 @@
-use clap::arg;
-
 #[derive(Clone, clap::Args)]
 pub struct GenshinRepositoryScannerLogicConfig {
     /// Max rows to scan

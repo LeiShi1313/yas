@@ -22,6 +22,12 @@ Yet Another Scanner
 
 SVTR 原文使用了多个 Local/Global Mixing，其中 Global Mixing 就是 Transformer 层，而根据*PaddleOCR*的代码，其 SVTR 识别模型也并未完全遵照 SVTR 原模型，而是骨干网络 + Transformer 的结构。*Yas*同样采用 PaddleOCR 的做法，使用 MobileNetV3_Small + Global Mixing，相当于将 CRNN 的 RNN 替换为 Transformer。由于训练集更加定制化，模型输入张量更小，网络结构简单，Yas模型相比PaddleOCR的V4轻量级模型，推理速度提升了6倍（仅在作者个人电脑上测试）。
 
+### 圣遗物数据目录
+
+Yas 使用 [genshin-db](https://github.com/theBowja/genshin-db) 的圣遗物与角色数据识别新内容。常见字段仍使用快速的定制模型；只有定制模型无法精确匹配的圣遗物名称或装备角色才会调用通用中文 OCR，并通过数据目录校正结果。因此，游戏增加圣遗物或角色时不再需要重新训练模型。
+
+程序最多每天从 `genshin-db-dist` 更新一次数据并缓存到本地；网络不可用时会使用缓存或程序内置的数据。可使用 `--artifact-catalog PATH` 指定本地目录文件，或使用 `--no-catalog-update` 完全禁用联网更新。
+
 ## 使用
 `yas.exe`把不同游戏的功能都集成到了一个exe中，因此需要使用命令行指定游戏，例如：
 ```shell
