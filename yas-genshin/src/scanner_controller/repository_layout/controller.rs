@@ -82,6 +82,27 @@ fn effective_switch_timeout(max_wait_ms: i32, speed: u32) -> u128 {
     (max_wait_ms.max(0) as u128 * multiplier).div_ceil(5)
 }
 
+fn safe_clickable_artifact_rows(
+    window_height: f64,
+    configured_rows: i32,
+    window_info: &GenshinRepositoryScanControllerWindowInfo,
+) -> usize {
+    let mut rows = configured_rows.max(1) as usize;
+    let safe_bottom = window_height * 0.9;
+    while rows > 1 {
+        let row = rows - 1;
+        let click_y = window_info.scan_margin_pos.y
+            + window_info.artifact_panel_offset.height
+            + (window_info.item_size.height + window_info.item_gap_size.height) * row as f64
+            + window_info.item_size.height / 4.0;
+        if click_y <= safe_bottom {
+            break;
+        }
+        rows -= 1;
+    }
+    rows
+}
+
 // constructor
 impl GenshinRepositoryScanController {
     pub fn new(
@@ -96,13 +117,29 @@ impl GenshinRepositoryScanController {
             game_info.platform,
             window_info_repo,
         )?;
-        let row = window_info.genshin_repository_item_row;
+        let configured_row = window_info.genshin_repository_item_row;
+        let row = if is_artifact {
+            safe_clickable_artifact_rows(
+                game_info.window.height as f64,
+                configured_row,
+                &window_info,
+            )
+        } else {
+            configured_row as usize
+        };
         let col = window_info.genshin_repository_item_col;
+
+        if row != configured_row as usize {
+            info!(
+                "using {} clickable artifact rows instead of {} visible rows",
+                row, configured_row
+            );
+        }
 
         Ok(GenshinRepositoryScanController {
             system_control: SystemControl::new(),
 
-            row: row as usize,
+            row,
             col: col as usize,
 
             window_info,
@@ -943,8 +980,46 @@ impl GenshinRepositoryScanController {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_switch_timeout, switch_frame_ready, GenshinRepositoryScanController};
+    use super::{
+        effective_switch_timeout, safe_clickable_artifact_rows, switch_frame_ready,
+        GenshinRepositoryScanController,
+    };
     use image::{Rgb, RgbImage};
+    use yas::positioning::{Pos, Rect, Size};
+
+    use crate::scanner_controller::repository_layout::GenshinRepositoryScanControllerWindowInfo;
+
+    fn row_layout(
+        rows: i32,
+        margin_y: f64,
+        artifact_offset_y: f64,
+        item_height: f64,
+        gap_height: f64,
+    ) -> GenshinRepositoryScanControllerWindowInfo {
+        GenshinRepositoryScanControllerWindowInfo {
+            panel_rect: Rect::default(),
+            flag_pos: Pos::default(),
+            item_gap_size: Size {
+                width: 0.0,
+                height: gap_height,
+            },
+            item_size: Size {
+                width: 0.0,
+                height: item_height,
+            },
+            scan_margin_pos: Pos {
+                x: 0.0,
+                y: margin_y,
+            },
+            pool_rect: Rect::default(),
+            artifact_panel_offset: Size {
+                width: 0.0,
+                height: artifact_offset_y,
+            },
+            genshin_repository_item_row: rows,
+            genshin_repository_item_col: 8,
+        }
+    }
 
     #[test]
     fn scrollbar_difference_detects_stable_and_changed_frames() {
@@ -1047,5 +1122,17 @@ mod tests {
         assert!(switch_frame_ready(2, 4));
         assert_eq!(effective_switch_timeout(800, 5), 160);
         assert_eq!(effective_switch_timeout(800, 1), 800);
+    }
+
+    #[test]
+    fn clipped_bottom_rows_are_not_treated_as_clickable() {
+        let sixteen_by_ten = row_layout(6, 91.0, 44.0, 113.0, 18.0);
+        assert_eq!(safe_clickable_artifact_rows(900.0, 6, &sixteen_by_ten), 5);
+
+        let four_by_three = row_layout(7, 81.0, 39.0, 101.0, 15.0);
+        assert_eq!(safe_clickable_artifact_rows(960.0, 7, &four_by_three), 7);
+
+        let sixteen_by_nine = row_layout(5, 101.0, 48.5, 126.0, 20.0);
+        assert_eq!(safe_clickable_artifact_rows(900.0, 5, &sixteen_by_nine), 5);
     }
 }
