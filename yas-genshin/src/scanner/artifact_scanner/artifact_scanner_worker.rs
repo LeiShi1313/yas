@@ -35,6 +35,33 @@ fn parse_level(s: &str) -> Result<i32> {
     anyhow::Ok(level)
 }
 
+fn parse_artifact_level(s: &str, star: usize) -> Result<i32> {
+    let level = parse_level(s)?;
+    let max_level = match star {
+        1 | 2 => 4,
+        3 => 12,
+        4 => 16,
+        5 => 20,
+        _ => anyhow::bail!("invalid artifact rarity {star}"),
+    };
+    if !(0..=max_level).contains(&level) {
+        anyhow::bail!("artifact level {level} is outside 0..={max_level}");
+    }
+    Ok(level)
+}
+
+fn infer_max_level_from_main_stat(star: usize, value: &str) -> Option<i32> {
+    if star != 5 {
+        return None;
+    }
+    let compact = value.replace(',', "").replace(' ', "");
+    matches!(
+        compact.as_str(),
+        "4780" | "311" | "46.6%" | "58.3%" | "187" | "51.8%" | "31.1%" | "62.2%" | "35.9%"
+    )
+    .then_some(20)
+}
+
 fn get_fast_image_to_text() -> Result<Box<dyn ImageToText<RgbImage> + Send>> {
     let model: Box<dyn ImageToText<RgbImage> + Send> = Box::new(yas_ocr_model!(
         "./models/model_training.onnx",
@@ -283,17 +310,30 @@ impl ArtifactScannerWorker {
             self.fast_inference(self.window_info.main_stat_value_rect, image)?;
 
         let str_level = self.fast_inference(self.window_info.level_rect, image)?;
-        let level = match parse_level(&str_level) {
+        let level = match parse_artifact_level(&str_level, item.star) {
             Ok(level) => level,
             Err(fast_error) => {
                 let general_level = self.general_inference(self.window_info.level_rect, image)?;
-                parse_level(&general_level).map_err(|general_error| {
-                    anyhow::anyhow!(
-                        "level OCR failed: fast=`{}` ({fast_error}), general=`{}` ({general_error})",
-                        str_level,
-                        general_level
-                    )
-                })?
+                match parse_artifact_level(&general_level, item.star) {
+                    Ok(level) => level,
+                    Err(general_error) => {
+                        if let Some(level) =
+                            infer_max_level_from_main_stat(item.star, &str_main_stat_value)
+                        {
+                            warn!(
+                                "inferred max artifact level from main stat value `{}` after level OCR fast=`{}` and general=`{}`",
+                                str_main_stat_value, str_level, general_level
+                            );
+                            level
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "level OCR failed: fast=`{}` ({fast_error}), general=`{}` ({general_error})",
+                                str_level,
+                                general_level
+                            ));
+                        }
+                    },
+                }
             },
         };
 
@@ -441,7 +481,9 @@ impl ArtifactScannerWorker {
 
                 // if there is a list image, then parse the lock state
                 match item.list_image.as_ref() {
-                    Some(v) => locks = vec![locks, self.get_page_locks(v)].concat(),
+                    Some(v) => {
+                        locks = vec![locks, self.get_page_locks(v)].concat();
+                    },
                     None => {},
                 };
 
@@ -479,12 +521,12 @@ impl ArtifactScannerWorker {
                 } else {
                     hash.insert(result.clone());
                 }
-                results.push(result);
+                results.push(result.clone());
 
                 if consecutive_dup_count >= info.col && !self.config.ignore_dup {
                     let message = format!(
-                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale",
-                        artifact_index, consecutive_dup_count
+                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale; repeated result: {result:#?}",
+                        artifact_index, consecutive_dup_count,
                     );
                     error!("{}", message);
                     errors.push(message);
@@ -514,7 +556,27 @@ impl ArtifactScannerWorker {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_pending_marker, next_consecutive_duplicate_count};
+    use super::{
+        contains_pending_marker, infer_max_level_from_main_stat, next_consecutive_duplicate_count,
+        parse_artifact_level,
+    };
+
+    #[test]
+    fn rejects_levels_above_the_rarity_cap() {
+        assert_eq!(parse_artifact_level("+20", 5).unwrap(), 20);
+        assert_eq!(parse_artifact_level("12", 3).unwrap(), 12);
+        assert!(parse_artifact_level("87", 5).is_err());
+        assert!(parse_artifact_level("+20", 4).is_err());
+    }
+
+    #[test]
+    fn infers_five_star_max_level_from_known_main_stat_caps() {
+        assert_eq!(infer_max_level_from_main_stat(5, "4,780"), Some(20));
+        assert_eq!(infer_max_level_from_main_stat(5, "46.6%"), Some(20));
+        assert_eq!(infer_max_level_from_main_stat(5, "62.2%"), Some(20));
+        assert_eq!(infer_max_level_from_main_stat(4, "46.6%"), None);
+        assert_eq!(infer_max_level_from_main_stat(5, "44.6%"), None);
+    }
 
     #[test]
     fn duplicate_streak_only_counts_adjacent_identical_results() {

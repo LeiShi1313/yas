@@ -208,6 +208,14 @@ impl GenshinArtifactScanner {
         self.controller.borrow().scanned_count()
     }
 
+    pub fn absolute_scroll_count(&self) -> usize {
+        self.controller.borrow().absolute_scroll_count()
+    }
+
+    pub fn scroll_diagnostics(&self) -> String {
+        self.controller.borrow().scroll_diagnostics()
+    }
+
     pub fn capture_panel(&self) -> Result<RgbImage> {
         self.capturer.capture_relative_to(
             self.window_info.panel_rect.to_rect_i32(),
@@ -244,14 +252,13 @@ impl GenshinArtifactScanner {
     }
 
     pub fn get_item_count(&self) -> Result<i32> {
-        let count = self.scanner_config.number;
+        if self.scanner_config.number > 0 {
+            return Ok(self.scanner_config.number);
+        }
+
         let item_name = "圣遗物";
 
         let max_count = Self::MAX_COUNT as i32;
-        if count > 0 {
-            return Ok(max_count.min(count));
-        }
-
         let im = self.capturer.capture_relative_to(
             self.window_info.item_count_rect.to_rect_i32(),
             self.game_info.window.origin(),
@@ -305,7 +312,13 @@ impl GenshinArtifactScanner {
                         "{} of {} captured artifact panels failed validation: {}",
                         output.errors.len(),
                         self.captured_count(),
-                        output.errors.iter().take(10).cloned().collect::<Vec<_>>().join("; ")
+                        output
+                            .errors
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; ")
                     ));
                 }
 
@@ -344,32 +357,6 @@ impl GenshinArtifactScanner {
         Ok(self.captured_count())
     }
 
-    fn is_page_first_artifact(&self, cur_index: i32) -> bool {
-        let col = self.window_info.col;
-        let row = self.window_info.row;
-
-        let page_size = col * row;
-        return cur_index % page_size == 0;
-    }
-
-    /// Get the starting row in the page where `cur_index` is in
-    /// max count: total count
-    /// cur_index: current item index (starting from 0)
-    fn get_start_row(&self, max_count: i32, cur_index: i32) -> i32 {
-        let col = self.window_info.col;
-        let row = self.window_info.row;
-
-        let page_size = col * row;
-        if max_count - cur_index >= page_size {
-            return 0;
-        } else {
-            let remain = max_count - cur_index;
-            let remain_row = (remain + col - 1) / col;
-            let scroll_row = remain_row.min(row);
-            return row - scroll_row;
-        }
-    }
-
     fn send(&mut self, tx: &Sender<Option<SendItem>>, count: i32) -> Result<()> {
         let mut generator =
             GenshinRepositoryScanController::get_generator(self.controller.clone(), count as usize);
@@ -383,34 +370,42 @@ impl GenshinArtifactScanner {
                     let image = self.capture_panel()?;
                     let star = self.get_star()?;
 
-                    let list_image = if self.is_page_first_artifact(artifact_index) {
+                    let (is_page_first, start_row, scroll_offset_y) = {
+                        let controller = self.controller.borrow();
+                        (
+                            artifact_index as usize == controller.page_first_scanned_count(),
+                            controller.scan_start_row(),
+                            controller.scroll_offset_y(),
+                        )
+                    };
+                    let list_image = if is_page_first {
                         let origin = self.game_info.window;
                         let margin = self.window_info.scan_margin_pos;
                         let gap = self.window_info.item_gap_size;
                         let size = self.window_info.item_size;
+                        let artifact_offset_y = self.window_info.artifact_panel_offset.height;
 
                         let left = (origin.left as f64 + margin.x) as i32;
                         let top = (origin.top as f64
                             + margin.y
-                            + (gap.height + size.height)
-                                * self.get_start_row(count, artifact_index) as f64)
+                            + artifact_offset_y
+                            + scroll_offset_y
+                            + (gap.height + size.height) * start_row as f64)
                             as i32;
                         let width = (origin.width as f64 - margin.x) as i32;
                         let height = (origin.height as f64
                             - margin.y
-                            - (gap.height + size.height)
-                                * self.get_start_row(count, artifact_index) as f64)
+                            - artifact_offset_y
+                            - scroll_offset_y
+                            - (gap.height + size.height) * start_row as f64)
                             as i32;
 
-                        let game_image = self
-                            .capturer
-                            .capture_rect(yas::positioning::Rect {
-                                left,
-                                top,
-                                width,
-                                height,
-                            })
-                            ?;
+                        let game_image = self.capturer.capture_rect(yas::positioning::Rect {
+                            left,
+                            top,
+                            width,
+                            height,
+                        })?;
                         Some(game_image)
                     } else {
                         None

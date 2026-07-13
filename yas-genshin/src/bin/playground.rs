@@ -11,7 +11,9 @@ use yas::window_info::load_window_info_repo;
 use yas_scanner_genshin::artifact::{ArtifactCatalog, ArtifactStat, GenshinArtifact};
 use yas_scanner_genshin::export::artifact::GOODFormat;
 use yas_scanner_genshin::scanner::{GenshinArtifactScanner, GenshinArtifactScannerConfig};
-use yas_scanner_genshin::scanner_controller::repository_layout::GenshinRepositoryScannerLogicConfig;
+use yas_scanner_genshin::scanner_controller::repository_layout::{
+    GenshinRepositoryScanController, GenshinRepositoryScannerLogicConfig,
+};
 
 fn window_info_repository() -> yas::window_info::WindowInfoRepository {
     load_window_info_repo!(
@@ -89,7 +91,15 @@ fn traverse_probe(output_dir: &Path, number: i32) -> Result<()> {
     let scans = match scanner.scan() {
         Ok(scans) => scans,
         Err(error) => {
-            fs::write(output_dir.join("error.txt"), format!("{error:#}\n"))?;
+            fs::write(
+                output_dir.join("error.txt"),
+                format!(
+                    "captured={}\nabsoluteScrolls={}\n{}\n{error:#}\n",
+                    scanner.captured_count(),
+                    scanner.absolute_scroll_count(),
+                    scanner.scroll_diagnostics()
+                ),
+            )?;
             return Err(error);
         },
     };
@@ -127,6 +137,7 @@ fn traverse_probe(output_dir: &Path, number: i32) -> Result<()> {
     let report = serde_json::json!({
         "scanned": scans.len(),
         "captured": captured_count,
+        "absoluteScrolls": scanner.absolute_scroll_count(),
         "exported": artifacts.len(),
         "pendingSubstats": pending_count,
         "unresolvedCount": unresolved.len(),
@@ -175,12 +186,50 @@ fn traverse_capture_probe(output_dir: &Path, number: i32) -> Result<()> {
     let captured = match scanner.capture_only() {
         Ok(captured) => captured,
         Err(error) => {
-            fs::write(output_dir.join("error.txt"), format!("{error:#}\n"))?;
+            fs::write(
+                output_dir.join("error.txt"),
+                format!(
+                    "captured={}\nabsoluteScrolls={}\n{}\n{error:#}\n",
+                    scanner.captured_count(),
+                    scanner.absolute_scroll_count(),
+                    scanner.scroll_diagnostics()
+                ),
+            )?;
             return Err(error);
         },
     };
-    fs::write(output_dir.join("captured.txt"), format!("{captured}\n"))?;
-    println!("captured={captured}");
+    let absolute_scrolls = scanner.absolute_scroll_count();
+    fs::write(
+        output_dir.join("captured.txt"),
+        format!(
+            "captured={captured}\nabsoluteScrolls={absolute_scrolls}\n{}\n",
+            scanner.scroll_diagnostics()
+        ),
+    )?;
+    println!("captured={captured} absoluteScrolls={absolute_scrolls}");
+    Ok(())
+}
+
+fn tail_scroll_probe(output_dir: &Path, rows: i32) -> Result<()> {
+    fs::create_dir_all(output_dir)?;
+    let game_info = GameInfoBuilder::new()
+        .add_local_window_name("原神")
+        .add_local_window_name("Genshin Impact")
+        .add_cloud_window_name("云·原神")
+        .build()?;
+    let mut controller = GenshinRepositoryScanController::new(
+        &window_info_repository(),
+        GenshinRepositoryScannerLogicConfig::default(),
+        game_info,
+        true,
+    )?;
+    controller.set_restore_focus(true);
+    let down_result = controller.scroll_rows(rows);
+    let up_result = controller.scroll_rows_up(rows);
+    fs::write(
+        output_dir.join("result.txt"),
+        format!("down={down_result:?}\nup={up_result:?}\n"),
+    )?;
     Ok(())
 }
 
@@ -198,7 +247,8 @@ fn main() -> Result<()> {
         anyhow!(
             "usage: yas_genshin_playground <image> | --live-probe [output-dir] | \
              --traverse-probe <number> [output-dir] | \
-             --traverse-capture-probe <number> [output-dir]"
+             --traverse-capture-probe <number> [output-dir] | \
+             --tail-scroll-probe <rows> [output-dir]"
         )
     })?;
 
@@ -208,6 +258,16 @@ fn main() -> Result<()> {
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("yas-live-e2e"));
         live_probe(&output_dir)
+    } else if command == "--tail-scroll-probe" {
+        let rows = args
+            .next()
+            .ok_or_else(|| anyhow!("--tail-scroll-probe requires a row count"))?
+            .parse::<i32>()?;
+        let output_dir = args
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("yas-tail-scroll-e2e"));
+        tail_scroll_probe(&output_dir, rows)
     } else if command == "--traverse-probe" || command == "--traverse-capture-probe" {
         let number = args
             .next()
