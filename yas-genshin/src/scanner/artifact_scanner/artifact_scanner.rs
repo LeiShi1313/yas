@@ -302,7 +302,7 @@ impl GenshinArtifactScanner {
 
                 if !output.errors.is_empty() {
                     return Err(anyhow::anyhow!(
-                        "{} of {} captured artifact panels failed OCR: {}",
+                        "{} of {} captured artifact panels failed validation: {}",
                         output.errors.len(),
                         self.captured_count(),
                         output.errors.iter().take(10).cloned().collect::<Vec<_>>().join("; ")

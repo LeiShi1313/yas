@@ -76,10 +76,9 @@ fn switch_frame_ready(consecutive_frames: u32, speed: u32) -> bool {
     consecutive_frames + speed >= 6
 }
 
-fn effective_switch_timeout(max_wait_ms: i32, speed: u32) -> u128 {
-    let speed = speed.clamp(1, 5) as u128;
-    let multiplier = 6 - speed;
-    (max_wait_ms.max(0) as u128 * multiplier).div_ceil(5)
+// Speed controls how many changed frames are required, not how long a slow switch may take.
+fn effective_switch_timeout(max_wait_ms: i32) -> u128 {
+    max_wait_ms.max(0) as u128
 }
 
 fn safe_clickable_artifact_rows(
@@ -281,6 +280,9 @@ impl GenshinRepositoryScanController {
                     object.borrow_mut().scroll_rows(scroll_row as i32)
                 };
                 match scroll_result {
+                    ScrollResult::Success | ScrollResult::Skip => {
+                        object.borrow_mut().align_row();
+                    },
                     ScrollResult::TimeLimitExceeded {
                         best_difference,
                         differences,
@@ -384,7 +386,9 @@ impl GenshinRepositoryScanController {
                     ScrollResult::FocusLost => {
                         return Err(anyhow!("Genshin lost foreground while scrolling"));
                     },
-                    _ => (),
+                    ScrollResult::Failed => {
+                        return Err(anyhow!("failed to scroll the Genshin repository"));
+                    },
                 }
 
                 utils::sleep(100);
@@ -906,8 +910,7 @@ impl GenshinRepositoryScanController {
 
         let mut consecutive_time = 0;
         let mut diff_flag = false;
-        let timeout =
-            effective_switch_timeout(self.config.max_wait_switch_item, self.config.switch_speed);
+        let timeout = effective_switch_timeout(self.config.max_wait_switch_item);
         while now.elapsed().unwrap().as_millis() < timeout {
             let im = self.capturer.capture_relative_to(
                 self.window_info.pool_rect.to_rect_i32(),
@@ -1120,8 +1123,8 @@ mod tests {
         assert!(switch_frame_ready(1, 5));
         assert!(!switch_frame_ready(1, 4));
         assert!(switch_frame_ready(2, 4));
-        assert_eq!(effective_switch_timeout(800, 5), 160);
-        assert_eq!(effective_switch_timeout(800, 1), 800);
+        assert_eq!(effective_switch_timeout(800), 800);
+        assert_eq!(effective_switch_timeout(-1), 0);
     }
 
     #[test]

@@ -70,6 +70,18 @@ fn is_semantically_blank(text: &str) -> bool {
     !text.chars().any(char::is_alphanumeric)
 }
 
+fn next_consecutive_duplicate_count<T: PartialEq>(
+    previous: Option<&T>,
+    current: &T,
+    current_count: i32,
+) -> i32 {
+    if previous == Some(current) {
+        current_count + 1
+    } else {
+        0
+    }
+}
+
 fn extract_stat_prefix(text: &str) -> Option<String> {
     let text = text.trim_start_matches(|character: char| {
         character.is_whitespace() || matches!(character, '·' | '•' | '-')
@@ -407,6 +419,7 @@ impl ArtifactScannerWorker {
             let mut hash: HashSet<GenshinArtifactScanResult> = HashSet::new();
             // if too many artifacts are same in consecutive, then an error has occurred
             let mut consecutive_dup_count = 0;
+            let mut previous_result = None;
 
             let is_verbose = self.config.verbose;
             let min_level = self.config.min_level;
@@ -454,17 +467,27 @@ impl ArtifactScannerWorker {
                     break;
                 }
 
+                consecutive_dup_count = next_consecutive_duplicate_count(
+                    previous_result.as_ref(),
+                    &result,
+                    consecutive_dup_count,
+                );
+                previous_result = Some(result.clone());
+
                 if hash.contains(&result) {
-                    consecutive_dup_count += 1;
                     warn!("识别到重复物品: {:#?}", result);
                 } else {
-                    consecutive_dup_count = 0;
                     hash.insert(result.clone());
                 }
                 results.push(result);
 
                 if consecutive_dup_count >= info.col && !self.config.ignore_dup {
-                    error!("识别到连续多个重复物品，可能为翻页错误，或者为非背包顶部开始扫描");
+                    let message = format!(
+                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale",
+                        artifact_index, consecutive_dup_count
+                    );
+                    error!("{}", message);
+                    errors.push(message);
                     // token.cancel();
                     break;
                 }
@@ -491,7 +514,15 @@ impl ArtifactScannerWorker {
 
 #[cfg(test)]
 mod tests {
-    use super::contains_pending_marker;
+    use super::{contains_pending_marker, next_consecutive_duplicate_count};
+
+    #[test]
+    fn duplicate_streak_only_counts_adjacent_identical_results() {
+        assert_eq!(next_consecutive_duplicate_count(Some(&1), &1, 0), 1);
+        assert_eq!(next_consecutive_duplicate_count(Some(&1), &1, 7), 8);
+        assert_eq!(next_consecutive_duplicate_count(Some(&1), &2, 7), 0);
+        assert_eq!(next_consecutive_duplicate_count::<i32>(None, &1, 7), 0);
+    }
 
     #[test]
     fn detects_exact_and_slightly_misread_pending_markers() {

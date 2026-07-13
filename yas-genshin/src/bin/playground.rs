@@ -72,7 +72,7 @@ fn traverse_probe(output_dir: &Path, number: i32) -> Result<()> {
     let config = GenshinArtifactScannerConfig {
         min_star: 1,
         min_level: 0,
-        ignore_dup: true,
+        ignore_dup: false,
         verbose: true,
         number,
         artifact_catalog: None,
