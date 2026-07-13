@@ -461,8 +461,7 @@ impl GenshinRepositoryScanController {
 
                 let remain = item_count - scanned_count;
                 let remain_row = (remain + object.borrow().col - 1) / object.borrow().col;
-                let max_scroll_rows = object.borrow().row.saturating_sub(1).max(1);
-                let scroll_row = remain_row.min(max_scroll_rows);
+                let scroll_row = remain_row.min(object.borrow().row);
                 start_row = object.borrow().row - scroll_row;
 
                 let use_fast_scroll = {
@@ -1026,7 +1025,7 @@ impl GenshinRepositoryScanController {
         self.scrolled_rows = Self::FAST_SCROLL_CALIBRATION_ROWS;
         self.avg_scroll_one_row = row_pitch / pixel_shift as f64;
         self.avg_scroll_row_pitch = row_pitch;
-        self.fast_pixels_per_event = 0.0;
+        self.fast_pixels_per_event = pixel_shift as f64;
         self.scroll_offset_y = 0.0;
         info!(
             "calibrated artifact scrolling at {:.2}px per wheel event",
@@ -1254,11 +1253,12 @@ impl GenshinRepositoryScanController {
 
     fn can_fast_scroll(&self, remaining_items: usize, scroll_rows: usize) -> bool {
         let page_size = self.row * self.col;
+        let is_full_page = scroll_rows >= self.row && remaining_items >= page_size;
         self.is_artifact
             && scroll_rows >= 3
             && self.scrolled_rows >= Self::FAST_SCROLL_CALIBRATION_ROWS
             && self.avg_scroll_one_row > 0.0
-            && remaining_items > page_size * 2
+            && (is_full_page || remaining_items > page_size * 2)
     }
 
     fn scroll_rows_fast(&mut self, count: i32) -> ScrollResult {
@@ -1290,6 +1290,52 @@ impl GenshinRepositoryScanController {
         let row_pitch = self.window_info.item_size.height + self.window_info.item_gap_size.height;
         let target_pixels = self.scroll_offset_y + row_pitch * count as f64;
         let tolerance = Self::row_pitch_tolerance(row_pitch.round() as u32) as f64;
+
+        // A full-page scroll has no old row left on screen to correlate. Use
+        // the calibrated carried-pixel plan from yas-lock, then verify that
+        // both the grid and scrollbar actually moved. Item selection and the
+        // consecutive-duplicate guard verify the new page while scanning it.
+        if count as usize >= self.row && self.fast_pixels_per_event > 0.0 {
+            let events = (target_pixels / self.fast_pixels_per_event)
+                .round()
+                .max(1.0) as i32;
+            for _ in 0..events {
+                if self.system_control.mouse_scroll(1, false).is_err() {
+                    return ScrollResult::Failed;
+                }
+                utils::sleep(Self::FAST_SCROLL_EVENT_DELAY_MS);
+            }
+            utils::sleep(Self::FAST_SCROLL_INPUT_SETTLE_MS);
+
+            let after = match self.capture_grid() {
+                Ok(image) => image,
+                Err(_) => return ScrollResult::Failed,
+            };
+            let scrollbar_after = match self.capture_scrollbar() {
+                Ok(image) => image,
+                Err(_) => return ScrollResult::Failed,
+            };
+            let grid_difference = Self::mean_pixel_difference(&before, &after);
+            let scrollbar_difference =
+                Self::mean_pixel_difference(&scrollbar_before, &scrollbar_after);
+            if grid_difference <= Self::GRID_STABLE_THRESHOLD
+                || scrollbar_difference <= Self::SCROLLBAR_STABLE_THRESHOLD
+            {
+                return ScrollResult::Failed;
+            }
+
+            let actual_shift = events as f64 * self.fast_pixels_per_event;
+            self.scroll_offset_y = target_pixels - actual_shift;
+            info!(
+                "fast full-page scroll sent {} wheel events ({:.2}px carried)",
+                events, self.scroll_offset_y
+            );
+            if self.settle_panel_pool().is_err() {
+                return ScrollResult::Failed;
+            }
+            return ScrollResult::Success;
+        }
+
         let mut sent_events = 0i32;
         let mut actual_shift = 0.0;
         let mut best_difference = f64::INFINITY;

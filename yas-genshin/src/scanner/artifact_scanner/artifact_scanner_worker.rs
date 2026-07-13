@@ -162,6 +162,44 @@ fn is_plausible_substat(text: &str, pending: bool) -> bool {
     }
 }
 
+fn get_page_locks_from_image(
+    window_info: &ArtifactScannerWindowInfo,
+    list_image: &RgbImage,
+) -> Vec<bool> {
+    let mut result = Vec::new();
+    let row = window_info.row;
+    let col = window_info.col;
+    let gap = window_info.item_gap_size;
+    let size = window_info.item_size;
+    let lock_pos = window_info.lock_pos;
+
+    for r in 0..row {
+        if ((gap.height + size.height) * r as f64) as u32 > list_image.height() {
+            break;
+        }
+        for c in 0..col {
+            let pos_x = (gap.width + size.width) * c as f64 + lock_pos.x;
+            let pos_y = (gap.height + size.height) * r as f64 + lock_pos.y;
+            let mut locked = false;
+            'square: for dx in -1..1 {
+                for dy in -10..10 {
+                    if pos_y as i32 + dy < 0 || (pos_y as i32 + dy) as u32 >= list_image.height() {
+                        continue;
+                    }
+                    let color = list_image
+                        .get_pixel((pos_x as i32 + dx) as u32, (pos_y as i32 + dy) as u32);
+                    if color_distance(color, &Rgb([255, 138, 117])) < 30 {
+                        locked = true;
+                        break 'square;
+                    }
+                }
+            }
+            result.push(locked);
+        }
+    }
+    result
+}
+
 /// run in a separate thread, accept captured image and get an artifact
 pub struct ArtifactScannerWorker {
     fast_model: Box<dyn ImageToText<RgbImage> + Send>,
@@ -410,46 +448,141 @@ impl ArtifactScannerWorker {
         self.scan_item_image(item, lock)
     }
 
-    /// Get all lock state from a list image
     fn get_page_locks(&self, list_image: &RgbImage) -> Vec<bool> {
-        let mut result = Vec::new();
+        get_page_locks_from_image(&self.window_info, list_image)
+    }
 
-        let row = self.window_info.row;
-        let col = self.window_info.col;
-        let gap = self.window_info.item_gap_size;
-        let size = self.window_info.item_size;
-        let lock_pos = self.window_info.lock_pos;
+    pub fn run_pool(
+        workers: Vec<Self>,
+        rx: Receiver<Option<SendItem>>,
+    ) -> JoinHandle<ArtifactScannerWorkerOutput> {
+        assert!(!workers.is_empty());
+        std::thread::spawn(move || {
+            let worker_count = workers.len();
+            let is_verbose = workers[0].config.verbose;
+            let min_level = workers[0].config.min_level;
+            let ignore_dup = workers[0].config.ignore_dup;
+            let info = workers[0].window_info.clone();
+            let mut job_senders = Vec::with_capacity(worker_count);
+            let mut worker_handles = Vec::with_capacity(worker_count);
 
-        for r in 0..row {
-            if ((gap.height + size.height) * (r as f64)) as u32 > list_image.height() {
-                break;
-            }
-            for c in 0..col {
-                let pos_x = (gap.width + size.width) * (c as f64) + lock_pos.x;
-                let pos_y = (gap.height + size.height) * (r as f64) + lock_pos.y;
-
-                let mut locked = false;
-                'sq: for dx in -1..1 {
-                    for dy in -10..10 {
-                        if pos_y as i32 + dy < 0
-                            || (pos_y as i32 + dy) as u32 >= list_image.height()
-                        {
-                            continue;
-                        }
-
-                        let color = list_image
-                            .get_pixel((pos_x as i32 + dx) as u32, (pos_y as i32 + dy) as u32);
-
-                        if color_distance(color, &Rgb([255, 138, 117])) < 30 {
-                            locked = true;
-                            break 'sq;
-                        }
+            for worker in workers {
+                let (job_tx, job_rx) = std::sync::mpsc::channel::<(usize, SendItem, bool)>();
+                job_senders.push(job_tx);
+                worker_handles.push(std::thread::spawn(move || {
+                    let mut results = Vec::new();
+                    while let Ok((index, item, lock)) = job_rx.recv() {
+                        results.push((index, worker.scan_item_image(item, lock)));
                     }
-                }
-                result.push(locked);
+                    results
+                }));
             }
-        }
-        result
+
+            let mut indexed_results = Vec::new();
+            let mut locks = Vec::new();
+            let mut artifact_index = 0usize;
+
+            for item in rx.into_iter() {
+                let item = match item {
+                    Some(item) => item,
+                    None => break,
+                };
+                if let Some(list_image) = item.list_image.as_ref() {
+                    locks.extend(get_page_locks_from_image(&info, list_image));
+                }
+
+                let Some(lock) = locks.get(artifact_index).copied() else {
+                    indexed_results.push((
+                        artifact_index,
+                        Err(anyhow::anyhow!(
+                            "item {} has no captured lock state",
+                            artifact_index + 1
+                        )),
+                    ));
+                    artifact_index += 1;
+                    continue;
+                };
+                let worker_index = artifact_index % worker_count;
+                if job_senders[worker_index]
+                    .send((artifact_index, item, lock))
+                    .is_err()
+                {
+                    indexed_results.push((
+                        artifact_index,
+                        Err(anyhow::anyhow!(
+                            "OCR worker {} stopped unexpectedly",
+                            worker_index + 1
+                        )),
+                    ));
+                }
+                artifact_index += 1;
+            }
+
+            drop(job_senders);
+            for handle in worker_handles {
+                match handle.join() {
+                    Ok(mut results) => indexed_results.append(&mut results),
+                    Err(_) => indexed_results.push((
+                        artifact_index,
+                        Err(anyhow::anyhow!("OCR worker thread panicked")),
+                    )),
+                }
+            }
+            indexed_results.sort_by_key(|(index, _)| *index);
+
+            let mut results = Vec::new();
+            let mut errors = Vec::new();
+            let mut hash: HashSet<GenshinArtifactScanResult> = HashSet::new();
+            let mut consecutive_dup_count = 0;
+            let mut previous_result = None;
+
+            for (index, result) in indexed_results {
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        error!("recognition error: {}", error);
+                        errors.push(format!("item {}: {error:#}", index + 1));
+                        continue;
+                    },
+                };
+                if is_verbose {
+                    info!("{:?}", result);
+                }
+                if result.level < min_level {
+                    break;
+                }
+
+                consecutive_dup_count = next_consecutive_duplicate_count(
+                    previous_result.as_ref(),
+                    &result,
+                    consecutive_dup_count,
+                );
+                previous_result = Some(result.clone());
+
+                if !hash.insert(result.clone()) {
+                    warn!("duplicate artifact: {result:#?}");
+                }
+                results.push(result.clone());
+
+                if consecutive_dup_count >= info.col && !ignore_dup {
+                    let message = format!(
+                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale; repeated result: {result:#?}",
+                        index + 1,
+                        consecutive_dup_count,
+                    );
+                    error!("{}", message);
+                    errors.push(message);
+                    break;
+                }
+            }
+
+            info!(
+                "recognition finished: {} artifacts, {} unique",
+                results.len(),
+                hash.len()
+            );
+            ArtifactScannerWorkerOutput { results, errors }
+        })
     }
 
     pub fn run(self, rx: Receiver<Option<SendItem>>) -> JoinHandle<ArtifactScannerWorkerOutput> {

@@ -35,6 +35,8 @@ use crate::scanner_controller::repository_layout::{
 use super::artifact_scanner_config::GenshinArtifactScannerConfig;
 use super::ArtifactScannerWindowInfo;
 
+const OCR_WORKER_COUNT: usize = 2;
+
 fn color_distance(c1: &image::Rgb<u8>, c2: &image::Rgb<u8>) -> usize {
     let x = c1.0[0] as i32 - c2.0[0] as i32;
     let y = c1.0[1] as i32 - c2.0[1] as i32;
@@ -287,14 +289,22 @@ impl GenshinArtifactScanner {
         let (tx, rx) = mpsc::channel::<Option<SendItem>>();
         // let token = self.cancellation_token.clone();
         let count = self.get_item_count()?;
-        let worker = ArtifactScannerWorker::new(
-            self.window_info.clone(),
-            self.scanner_config.clone(),
-            Arc::clone(&self.catalog),
-        )?;
+        let mut workers = (0..OCR_WORKER_COUNT)
+            .map(|_| {
+                ArtifactScannerWorker::new(
+                    self.window_info.clone(),
+                    self.scanner_config.clone(),
+                    Arc::clone(&self.catalog),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        let join_handle = worker.run(rx);
-        info!("Worker created");
+        let join_handle = if workers.len() == 1 {
+            workers.pop().unwrap().run(rx)
+        } else {
+            ArtifactScannerWorker::run_pool(workers, rx)
+        };
+        info!("{} OCR workers created", OCR_WORKER_COUNT);
 
         let send_result = self.send(&tx, count);
 
