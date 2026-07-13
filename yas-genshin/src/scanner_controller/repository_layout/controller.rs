@@ -28,6 +28,8 @@ pub struct GenshinRepositoryScanController {
     // for scrolls
     scrolled_rows: u32,
     avg_scroll_one_row: f64,
+    avg_scroll_row_pitch: f64,
+    scroll_remainder: f64,
 
     avg_switch_time: f64,
     scanned_count: usize,
@@ -70,6 +72,16 @@ fn color_distance(c1: &image::Rgb<u8>, c2: &image::Rgb<u8>) -> usize {
     (x * x + y * y + z * z) as usize
 }
 
+fn switch_frame_ready(consecutive_frames: u32, speed: u32) -> bool {
+    consecutive_frames + speed >= 6
+}
+
+fn effective_switch_timeout(max_wait_ms: i32, speed: u32) -> u128 {
+    let speed = speed.clamp(1, 5) as u128;
+    let multiplier = 6 - speed;
+    (max_wait_ms.max(0) as u128 * multiplier).div_ceil(5)
+}
+
 // constructor
 impl GenshinRepositoryScanController {
     pub fn new(
@@ -102,6 +114,8 @@ impl GenshinRepositoryScanController {
 
             scrolled_rows: 0,
             avg_scroll_one_row: 0.0,
+            avg_scroll_row_pitch: 0.0,
+            scroll_remainder: 0.0,
 
             avg_switch_time: 0.0,
             // scanned_count: 0,
@@ -220,7 +234,15 @@ impl GenshinRepositoryScanController {
                 let scroll_row = remain_row.min(object.borrow().row);
                 start_row = object.borrow().row - scroll_row;
 
-                let scroll_result = object.borrow_mut().scroll_rows(scroll_row as i32);
+                let use_fast_scroll = {
+                    let controller = object.borrow();
+                    controller.can_fast_scroll(remain, scroll_row)
+                };
+                let scroll_result = if use_fast_scroll {
+                    object.borrow_mut().scroll_rows_fast(scroll_row as i32)
+                } else {
+                    object.borrow_mut().scroll_rows(scroll_row as i32)
+                };
                 match scroll_result {
                     ScrollResult::TimeLimitExceeded {
                         best_difference,
@@ -344,6 +366,9 @@ impl GenshinRepositoryScanController {
     const SCROLLBAR_STABLE_THRESHOLD: f64 = 0.05;
     const ROW_ALIGNMENT_THRESHOLD: f64 = 15.0;
     const ROW_ALIGNMENT_VALLEY_RISE: f64 = 8.0;
+    const FAST_SCROLL_CALIBRATION_ROWS: u32 = 3;
+    const FAST_SCROLL_EXTRA_EVENTS: i32 = 8;
+    const FAST_SCROLL_ROW_PITCH_TOLERANCE: u32 = 8;
 
     fn grid_rect(&self) -> Rect<i32> {
         let mut margin = self.window_info.scan_margin_pos;
@@ -425,16 +450,25 @@ impl GenshinRepositoryScanController {
         total as f64 / left.as_raw().len() as f64
     }
 
-    fn shifted_row_difference(before: &RgbImage, after: &RgbImage, row_pitch: u32) -> f64 {
-        if before.dimensions() != after.dimensions() || row_pitch >= before.height() {
+    fn shifted_row_prefix_difference(
+        before: &RgbImage,
+        after: &RgbImage,
+        row_shift: u32,
+        prefix_height: u32,
+    ) -> f64 {
+        if before.dimensions() != after.dimensions()
+            || row_shift >= before.height()
+            || prefix_height == 0
+        {
             return f64::INFINITY;
         }
 
+        let comparison_height = prefix_height.min(before.height() - row_shift);
         let mut total = 0u64;
         let mut samples = 0u64;
-        for y in (0..before.height() - row_pitch).step_by(2) {
+        for y in (0..comparison_height).step_by(2) {
             for x in (0..before.width()).step_by(2) {
-                let old = before.get_pixel(x, y + row_pitch);
+                let old = before.get_pixel(x, y + row_shift);
                 let new = after.get_pixel(x, y);
                 for channel in 0..3 {
                     total += (old[channel] as i32 - new[channel] as i32).unsigned_abs() as u64;
@@ -443,6 +477,33 @@ impl GenshinRepositoryScanController {
             }
         }
         total as f64 / samples as f64
+    }
+
+    fn row_pitch_tolerance(row_pitch: u32) -> u32 {
+        Self::FAST_SCROLL_ROW_PITCH_TOLERANCE.max(row_pitch / 8)
+    }
+
+    fn best_shift_difference(
+        before: &RgbImage,
+        after: &RgbImage,
+        nominal_shift: u32,
+        tolerance: u32,
+        prefix_height: u32,
+    ) -> (u32, f64) {
+        if before.dimensions() != after.dimensions() || before.height() < 2 {
+            return (0, f64::INFINITY);
+        }
+        let min_shift = nominal_shift.saturating_sub(tolerance).max(1);
+        let max_shift = (nominal_shift + tolerance).min(before.height() - 1);
+        (min_shift..=max_shift)
+            .map(|shift| {
+                (
+                    shift,
+                    Self::shifted_row_prefix_difference(before, after, shift, prefix_height),
+                )
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .unwrap_or((0, f64::INFINITY))
     }
 
     pub fn scroll_to_first(&mut self) -> Result<()> {
@@ -469,6 +530,8 @@ impl GenshinRepositoryScanController {
                 if stable_batches >= 3 {
                     self.scrolled_rows = 0;
                     self.avg_scroll_one_row = 0.0;
+                    self.avg_scroll_row_pitch = 0.0;
+                    self.scroll_remainder = 0.0;
                     info!("已回到背包第一件物品（{} 批滚轮）", batch + 1);
                     return Ok(());
                 }
@@ -556,11 +619,15 @@ impl GenshinRepositoryScanController {
             Ok(image) => image,
             Err(_) => return ScrollResult::Failed,
         };
-        let row_pitch =
-            (self.window_info.item_size.height + self.window_info.item_gap_size.height) as u32;
+        let row_pitch = if self.avg_scroll_row_pitch > 0.0 {
+            self.avg_scroll_row_pitch.round() as u32
+        } else {
+            (self.window_info.item_size.height + self.window_info.item_gap_size.height) as u32
+        };
         let max_scroll = 25;
         let mut best_difference = f64::INFINITY;
         let mut best_count = 0;
+        let mut best_pixel_shift = row_pitch;
         let mut best_image = None;
         let mut differences = Vec::with_capacity(max_scroll);
 
@@ -579,19 +646,21 @@ impl GenshinRepositoryScanController {
                 Ok(image) => image,
                 Err(_) => return ScrollResult::Failed,
             };
-            let difference = if direction > 0 {
-                Self::shifted_row_difference(&before, &current, row_pitch)
+            let tolerance = Self::row_pitch_tolerance(row_pitch);
+            let (pixel_shift, difference) = if direction > 0 {
+                Self::best_shift_difference(&before, &current, row_pitch, tolerance, row_pitch / 2)
             } else {
-                Self::shifted_row_difference(&current, &before, row_pitch)
+                Self::best_shift_difference(&current, &before, row_pitch, tolerance, row_pitch / 2)
             };
             differences.push(difference);
             if difference < best_difference {
                 best_difference = difference;
                 best_count = count;
+                best_pixel_shift = pixel_shift;
                 best_image = Some(current.clone());
             }
             if difference <= Self::ROW_ALIGNMENT_THRESHOLD {
-                self.update_avg_row(count as i32);
+                self.update_avg_row(count as i32, pixel_shift);
                 return ScrollResult::Success;
             }
             if best_count >= 3
@@ -602,7 +671,7 @@ impl GenshinRepositoryScanController {
                     let _ = self.system_control.mouse_scroll(-direction, false);
                 }
                 utils::sleep(self.config.scroll_delay.max(20) as u32);
-                self.update_avg_row(best_count as i32);
+                self.update_avg_row(best_count as i32, best_pixel_shift);
                 return ScrollResult::Success;
             }
         }
@@ -651,6 +720,131 @@ impl GenshinRepositoryScanController {
         ScrollResult::Success
     }
 
+    fn can_fast_scroll(&self, remaining_items: usize, scroll_rows: usize) -> bool {
+        let page_size = self.row * self.col;
+        self.is_artifact
+            && scroll_rows >= 3
+            && self.scrolled_rows >= Self::FAST_SCROLL_CALIBRATION_ROWS
+            && self.avg_scroll_one_row > 0.0
+            && remaining_items > page_size * 2
+    }
+
+    fn best_burst_alignment(
+        before: &RgbImage,
+        after: &RgbImage,
+        row_pitch: u32,
+        max_rows: i32,
+    ) -> (i32, f64, Vec<f64>) {
+        let differences = (1..=max_rows)
+            .map(|rows| {
+                let rows = rows as u32;
+                let nominal_shift = row_pitch * rows;
+                let tolerance = Self::row_pitch_tolerance(row_pitch) * rows;
+                Self::best_shift_difference(before, after, nominal_shift, tolerance, row_pitch / 2)
+                    .1
+            })
+            .collect::<Vec<_>>();
+        let (index, difference) = differences
+            .iter()
+            .enumerate()
+            .min_by(|left, right| left.1.total_cmp(right.1))
+            .map(|(index, difference)| (index, *difference))
+            .unwrap_or((0, f64::INFINITY));
+        (index as i32 + 1, difference, differences)
+    }
+
+    fn scroll_rows_fast(&mut self, count: i32) -> ScrollResult {
+        if count < 3
+            || self.scrolled_rows < Self::FAST_SCROLL_CALIBRATION_ROWS
+            || self.avg_scroll_one_row <= 0.0
+        {
+            return self.scroll_rows(count);
+        }
+        if self.move_to(0, 0).is_err() {
+            return ScrollResult::Failed;
+        }
+        utils::sleep(20);
+        if self.ensure_game_foreground().is_err() {
+            return ScrollResult::FocusLost;
+        }
+
+        // Target two rows short because Genshin can coalesce a wheel burst into
+        // more movement than the same events sent individually. We still allow
+        // one extra row and keep an overlapping row to prove the exact shift.
+        let burst_rows = count - 2;
+        let max_aligned_rows = count - 1;
+        let before = match self.capture_grid() {
+            Ok(image) => image,
+            Err(_) => return ScrollResult::Failed,
+        };
+        let scrollbar_before = match self.capture_scrollbar() {
+            Ok(image) => image,
+            Err(_) => return ScrollResult::Failed,
+        };
+        let row_pitch = if self.avg_scroll_row_pitch > 0.0 {
+            self.avg_scroll_row_pitch.round() as u32
+        } else {
+            (self.window_info.item_size.height + self.window_info.item_gap_size.height) as u32
+        };
+        let desired_events = self.avg_scroll_one_row * burst_rows as f64 + self.scroll_remainder;
+        let initial_events = (desired_events.floor() as i32).max(1);
+        let max_events = initial_events + Self::FAST_SCROLL_EXTRA_EVENTS;
+        let mut sent_events = 0;
+        let mut last_differences = Vec::new();
+        let mut best_difference = f64::INFINITY;
+
+        while sent_events < max_events {
+            if self.ensure_game_foreground().is_err() {
+                return ScrollResult::FocusLost;
+            }
+            if utils::is_rmb_down() {
+                return ScrollResult::Interrupt;
+            }
+
+            let events = if sent_events == 0 { initial_events } else { 1 };
+            for _ in 0..events {
+                if self.system_control.mouse_scroll(1, false).is_err() {
+                    return ScrollResult::Failed;
+                }
+            }
+            sent_events += events;
+            utils::sleep(self.config.scroll_delay.max(20) as u32);
+
+            let after = match self.capture_grid() {
+                Ok(image) => image,
+                Err(_) => return ScrollResult::Failed,
+            };
+            let (aligned_rows, difference, differences) =
+                Self::best_burst_alignment(&before, &after, row_pitch, max_aligned_rows);
+            best_difference = best_difference.min(difference);
+            last_differences = differences;
+            if difference <= Self::ROW_ALIGNMENT_THRESHOLD {
+                self.scroll_remainder = desired_events - sent_events as f64;
+                info!(
+                    "fast scroll aligned {} rows with {} wheel events (difference {:.3})",
+                    aligned_rows, sent_events, difference
+                );
+                return self.scroll_rows(count - aligned_rows);
+            }
+        }
+
+        let _ = before.save(std::env::temp_dir().join("yas-fast-scroll-before.png"));
+        if let Ok(after) = self.capture_grid() {
+            let _ = after.save(std::env::temp_dir().join("yas-fast-scroll-after.png"));
+        }
+        if let Ok(scrollbar_after) = self.capture_scrollbar() {
+            if Self::mean_pixel_difference(&scrollbar_before, &scrollbar_after)
+                <= Self::SCROLLBAR_STABLE_THRESHOLD
+            {
+                return ScrollResult::EndReached;
+            }
+        }
+        ScrollResult::TimeLimitExceeded {
+            best_difference,
+            differences: last_differences,
+        }
+    }
+
     pub fn scroll_rows_up(&mut self, count: i32) -> ScrollResult {
         if self.move_to(0, 0).is_err() {
             return ScrollResult::Failed;
@@ -675,7 +869,9 @@ impl GenshinRepositoryScanController {
 
         let mut consecutive_time = 0;
         let mut diff_flag = false;
-        while now.elapsed().unwrap().as_millis() < self.config.max_wait_switch_item as u128 {
+        let timeout =
+            effective_switch_timeout(self.config.max_wait_switch_item, self.config.switch_speed);
+        while now.elapsed().unwrap().as_millis() < timeout {
             let im = self.capturer.capture_relative_to(
                 self.window_info.pool_rect.to_rect_i32(),
                 self.game_info.window.origin(),
@@ -687,9 +883,10 @@ impl GenshinRepositoryScanController {
                 self.pool = pool;
                 diff_flag = true;
                 consecutive_time = 0;
-            } else if diff_flag {
+            }
+            if diff_flag {
                 consecutive_time += 1;
-                if consecutive_time == 1 {
+                if switch_frame_ready(consecutive_time, self.config.switch_speed) {
                     self.avg_switch_time = (self.avg_switch_time * self.scanned_count as f64
                         + now.elapsed().unwrap().as_millis() as f64)
                         / (self.scanned_count as f64 + 1.0);
@@ -729,22 +926,24 @@ impl GenshinRepositoryScanController {
     }
 
     #[inline(always)]
-    fn update_avg_row(&mut self, count: i32) {
+    fn update_avg_row(&mut self, count: i32, pixel_shift: u32) {
         let current = self.avg_scroll_one_row * self.scrolled_rows as f64 + count as f64;
+        let current_pitch =
+            self.avg_scroll_row_pitch * self.scrolled_rows as f64 + pixel_shift as f64;
         self.scrolled_rows += 1;
         self.avg_scroll_one_row = current / self.scrolled_rows as f64;
+        self.avg_scroll_row_pitch = current_pitch / self.scrolled_rows as f64;
 
         info!(
-            "avg scroll one row: {} ({})",
-            self.avg_scroll_one_row, self.scrolled_rows
+            "avg scroll one row: {} events, {} px ({})",
+            self.avg_scroll_one_row, self.avg_scroll_row_pitch, self.scrolled_rows
         );
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::GenshinRepositoryScanController;
+    use super::{effective_switch_timeout, switch_frame_ready, GenshinRepositoryScanController};
     use image::{Rgb, RgbImage};
 
     #[test]
@@ -779,9 +978,51 @@ mod tests {
         }
 
         assert_eq!(
-            GenshinRepositoryScanController::shifted_row_difference(&before, &after, 2),
+            GenshinRepositoryScanController::shifted_row_prefix_difference(&before, &after, 2, 6),
             0.0
         );
+    }
+
+    #[test]
+    fn burst_alignment_finds_the_exact_shift() {
+        let mut before = RgbImage::new(4, 500);
+        for y in 0..before.height() {
+            for x in 0..before.width() {
+                before.put_pixel(x, y, Rgb([(y % 251) as u8, x as u8, 0]));
+            }
+        }
+        let mut after = RgbImage::new(4, 500);
+        for y in 0..200 {
+            for x in 0..after.width() {
+                after.put_pixel(x, y, *before.get_pixel(x, y + 300));
+            }
+        }
+
+        let (rows, difference, _) =
+            GenshinRepositoryScanController::best_burst_alignment(&before, &after, 100, 4);
+        assert_eq!(rows, 3);
+        assert_eq!(difference, 0.0);
+    }
+
+    #[test]
+    fn row_alignment_calibrates_away_from_the_profile_pitch() {
+        let mut before = RgbImage::new(4, 300);
+        for y in 0..before.height() {
+            for x in 0..before.width() {
+                before.put_pixel(x, y, Rgb([(y % 251) as u8, x as u8, 0]));
+            }
+        }
+        let mut after = RgbImage::new(4, 300);
+        for y in 0..206 {
+            for x in 0..after.width() {
+                after.put_pixel(x, y, *before.get_pixel(x, y + 94));
+            }
+        }
+
+        let (shift, difference) =
+            GenshinRepositoryScanController::best_shift_difference(&before, &after, 100, 12, 50);
+        assert_eq!(shift, 94);
+        assert_eq!(difference, 0.0);
     }
 
     #[test]
@@ -797,5 +1038,14 @@ mod tests {
         assert_eq!(bottom_start, 2336);
         assert_eq!(final_row_offset / columns, 3);
         assert_eq!(final_row_offset % columns, 0);
+    }
+
+    #[test]
+    fn switch_speed_five_accepts_the_first_changed_frame() {
+        assert!(switch_frame_ready(1, 5));
+        assert!(!switch_frame_ready(1, 4));
+        assert!(switch_frame_ready(2, 4));
+        assert_eq!(effective_switch_timeout(800, 5), 160);
+        assert_eq!(effective_switch_timeout(800, 1), 800);
     }
 }

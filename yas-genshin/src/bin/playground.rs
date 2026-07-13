@@ -172,7 +172,13 @@ fn traverse_capture_probe(output_dir: &Path, number: i32) -> Result<()> {
         game_info,
     )?;
     scanner.set_restore_focus(true);
-    let captured = scanner.capture_only()?;
+    let captured = match scanner.capture_only() {
+        Ok(captured) => captured,
+        Err(error) => {
+            fs::write(output_dir.join("error.txt"), format!("{error:#}\n"))?;
+            return Err(error);
+        },
+    };
     fs::write(output_dir.join("captured.txt"), format!("{captured}\n"))?;
     println!("captured={captured}");
     Ok(())
