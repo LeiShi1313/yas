@@ -1,5 +1,3 @@
-use clap::arg;
-
 #[derive(Clone, clap::Args)]
 pub struct GenshinRepositoryScannerLogicConfig {
     /// Max rows to scan
@@ -21,6 +19,15 @@ pub struct GenshinRepositoryScannerLogicConfig {
     #[arg(id = "max-wait-switch-item", long = "max-wait-switch-item", help = "切换物品最大等待时间（ms）", default_value_t = 800)]
     pub max_wait_switch_item: i32,
 
+    /// Switch detection speed. Higher values capture earlier animation frames.
+    #[arg(
+        id = "switch-speed",
+        long = "switch-speed",
+        value_parser = clap::value_parser!(u32).range(1..=5),
+        default_value_t = 5
+    )]
+    pub switch_speed: u32,
+
     /// The time to wait for switching to the next item in cloud game
     #[arg(id = "cloud-wait-switch-item", long = "cloud-wait-switch-item", help = "云游戏切换物品等待时间（ms）", default_value_t = 300)]
     pub cloud_wait_switch_item: i32,
@@ -35,6 +42,7 @@ impl Default for GenshinRepositoryScannerLogicConfig {
             // number: -1,
             // dump_mode: false,
             max_wait_switch_item: 800,
+            switch_speed: 5,
             cloud_wait_switch_item: 300,
         }
     }

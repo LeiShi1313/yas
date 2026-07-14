@@ -1,5 +1,5 @@
-use serde::{Serialize, Serializer};
 use crate::artifact::GenshinArtifact;
+use serde::{Serialize, Serializer};
 
 pub struct GenshinArtifactCSVFormat<'a> {
     artifacts: &'a [GenshinArtifact],
@@ -40,7 +40,7 @@ fn single_artifact_to_string(artifact: &GenshinArtifact) -> String {
         s += ",,";
     }
     if let Some(e) = &artifact.equip {
-        s = s + "," + e;
+        s = s + "," + e.name_zh_cn();
     } else {
         s += ","
     }
@@ -50,9 +50,7 @@ fn single_artifact_to_string(artifact: &GenshinArtifact) -> String {
 
 impl<'a> GenshinArtifactCSVFormat<'a> {
     pub fn new(artifacts: &'a [GenshinArtifact]) -> Self {
-        Self {
-            artifacts
-        }
+        Self { artifacts }
     }
 
     pub fn to_csv_string(&self) -> String {
@@ -69,7 +67,10 @@ impl<'a> GenshinArtifactCSVFormat<'a> {
 }
 
 impl<'a> Serialize for GenshinArtifactCSVFormat<'a> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         let s = self.to_csv_string();
         serializer.serialize_str(&s)
     }

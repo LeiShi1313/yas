@@ -6,8 +6,8 @@ use clap::FromArgMatches;
 use yas::export::{AssetEmitter, ExportAssets};
 
 use crate::artifact::GenshinArtifact;
-use crate::export::artifact::{ExportArtifactConfig, GenshinArtifactExportFormat};
 use crate::export::artifact::csv::GenshinArtifactCSVFormat;
+use crate::export::artifact::{ExportArtifactConfig, GenshinArtifactExportFormat};
 
 use super::good::GOODFormat;
 use super::mingyu_lab::MingyuLabFormat;
@@ -19,13 +19,13 @@ pub struct GenshinArtifactExporter<'a> {
     pub output_dir: PathBuf,
 }
 
-impl <'a> GenshinArtifactExporter<'a> {
+impl<'a> GenshinArtifactExporter<'a> {
     pub fn new(arg_matches: &clap::ArgMatches, results: &'a [GenshinArtifact]) -> Result<Self> {
         let config = ExportArtifactConfig::from_arg_matches(arg_matches)?;
         Ok(Self {
             format: config.format,
             results: Some(results),
-            output_dir: PathBuf::from(&config.output_dir)
+            output_dir: PathBuf::from(&config.output_dir),
         })
     }
 }
@@ -48,7 +48,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                     Some(String::from("artifacts")),
                     path,
                     contents.into_bytes(),
-                    Some(String::from("莫娜圣遗物格式")));
+                    Some(String::from("莫娜圣遗物格式")),
+                );
             },
             GenshinArtifactExportFormat::MingyuLab => {
                 let path = self.output_dir.join("mingyulab.json");
@@ -59,7 +60,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                     Some(String::from("artifacts")),
                     path,
                     contents.into_bytes(),
-                    Some(String::from("原魔计算器圣遗物格式")));
+                    Some(String::from("原魔计算器圣遗物格式")),
+                );
             },
             GenshinArtifactExportFormat::Good => {
                 let path = self.output_dir.join("good.json");
@@ -70,7 +72,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                     Some(String::from("artifacts")),
                     path,
                     contents.into_bytes(),
-                    Some(String::from("GOOD圣遗物格式")));
+                    Some(String::from("GOOD圣遗物格式")),
+                );
             },
             GenshinArtifactExportFormat::CSV => {
                 let path = self.output_dir.join("artifacts.csv");
@@ -80,7 +83,7 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                     Some(String::from("artifacts csv format")),
                     path,
                     contents.into_bytes(),
-                    Some(String::from("CSV格式圣遗物"))
+                    Some(String::from("CSV格式圣遗物")),
                 );
             },
             GenshinArtifactExportFormat::All => {
@@ -94,7 +97,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                         Some(String::from("mona")),
                         path,
                         contents.into_bytes(),
-                        Some(String::from("莫娜圣遗物格式")));
+                        Some(String::from("莫娜圣遗物格式")),
+                    );
                 }
                 // mingyulab
                 {
@@ -106,7 +110,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                         Some(String::from("mingyulab")),
                         path,
                         contents.into_bytes(),
-                        Some(String::from("原魔计算器圣遗物格式")));
+                        Some(String::from("原魔计算器圣遗物格式")),
+                    );
                 }
                 // good
                 {
@@ -118,7 +123,8 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                         Some(String::from("GOOD")),
                         path,
                         contents.into_bytes(),
-                        Some(String::from("GOOD圣遗物格式")));
+                        Some(String::from("GOOD圣遗物格式")),
+                    );
                 }
                 // csv
                 {
@@ -129,10 +135,10 @@ impl<'a> AssetEmitter for GenshinArtifactExporter<'a> {
                         Some(String::from("csv")),
                         path,
                         contents.into_bytes(),
-                        Some(String::from("CSV格式圣遗物"))
+                        Some(String::from("CSV格式圣遗物")),
                     );
                 }
-            }
+            },
         };
     }
 }

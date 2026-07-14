@@ -4,6 +4,7 @@ pub struct GenshinArtifactScanResult {
     pub main_stat_name: String,
     pub main_stat_value: String,
     pub sub_stat: [String; 4],
+    pub sub_stat_active: [bool; 4],
     pub equip: String,
     pub level: i32,
     pub star: i32,

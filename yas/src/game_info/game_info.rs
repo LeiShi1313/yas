@@ -5,6 +5,8 @@ use crate::positioning::Rect;
 #[derive(Clone, Debug)]
 pub struct GameInfo {
     pub window: Rect<i32>,
+    #[cfg(windows)]
+    pub window_handle: isize,
     pub resolution_family: ResolutionFamily,
     pub is_cloud: bool,
     pub ui: UI,

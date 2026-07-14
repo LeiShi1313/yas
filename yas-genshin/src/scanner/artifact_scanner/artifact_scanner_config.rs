@@ -1,11 +1,25 @@
+use std::path::PathBuf;
+
 #[derive(Clone, clap::Args)]
 pub struct GenshinArtifactScannerConfig {
     /// Items with stars less than this will be ignored
-    #[arg(id = "min-star", long = "min-star", help = "最小星级", value_name = "MIN_STAR", default_value_t = 4)]
+    #[arg(
+        id = "min-star",
+        long = "min-star",
+        help = "最小星级",
+        value_name = "MIN_STAR",
+        default_value_t = 4
+    )]
     pub min_star: i32,
 
     /// Items with level less than this will be ignored
-    #[arg(id = "min-level", long = "min-level", help = "最小等级", value_name = "MIN_LEVEL", default_value_t = 0)]
+    #[arg(
+        id = "min-level",
+        long = "min-level",
+        help = "最小等级",
+        value_name = "MIN_LEVEL",
+        default_value_t = 0
+    )]
     pub min_level: i32,
 
     /// Ignore duplicated items
@@ -19,4 +33,12 @@ pub struct GenshinArtifactScannerConfig {
     /// the exact amount to scan
     #[arg(id = "number", long, help = "指定圣遗物数量", value_name = "NUMBER", default_value_t = -1)]
     pub number: i32,
+
+    /// Use a local normalized genshin-db catalog instead of the cached/bundled catalog.
+    #[arg(id = "artifact-catalog", long, value_name = "PATH")]
+    pub artifact_catalog: Option<PathBuf>,
+
+    /// Do not refresh the cached catalog from genshin-db-dist.
+    #[arg(id = "no-catalog-update", long)]
+    pub no_catalog_update: bool,
 }

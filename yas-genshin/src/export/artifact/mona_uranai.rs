@@ -37,48 +37,24 @@ impl ArtifactStatName {
 
 impl ArtifactSetName {
     pub fn to_mona(&self) -> String {
-        let same = self.to_string();
-        let temp = match self {
-            ArtifactSetName::ArchaicPetra => "archaicPetra",
-            ArtifactSetName::HeartOfDepth => "heartOfDepth",
-            ArtifactSetName::BlizzardStrayer => "blizzardStrayer",
-            ArtifactSetName::RetracingBolide => "retracingBolide",
-            ArtifactSetName::NoblesseOblige => "noblesseOblige",
-            ArtifactSetName::GladiatorFinale => "gladiatorFinale",
-            ArtifactSetName::MaidenBeloved => "maidenBeloved",
-            ArtifactSetName::ViridescentVenerer => "viridescentVenerer",
-            ArtifactSetName::LavaWalker => "lavaWalker",
-            ArtifactSetName::CrimsonWitch => "crimsonWitch",
-            ArtifactSetName::ThunderSmoother => "thunderSmoother",
-            ArtifactSetName::ThunderingFury => "thunderingFury",
-            ArtifactSetName::BloodstainedChivalry => "bloodstainedChivalry",
-            ArtifactSetName::WandererTroupe => "wandererTroupe",
-            ArtifactSetName::Scholar => "scholar",
-            ArtifactSetName::Gambler => "gambler",
-            ArtifactSetName::TinyMiracle => "tinyMiracle",
-            ArtifactSetName::MartialArtist => "martialArtist",
-            ArtifactSetName::BraveHeart => "braveHeart",
-            ArtifactSetName::ResolutionOfSojourner => "resolutionOfSojourner",
-            ArtifactSetName::DefenderWill => "defenderWill",
-            ArtifactSetName::Berserker => "berserker",
-            ArtifactSetName::Instructor => "instructor",
-            ArtifactSetName::Exile => "exile",
-            ArtifactSetName::Adventurer => "adventurer",
-            ArtifactSetName::LuckyDog => "luckyDog",
-            ArtifactSetName::TravelingDoctor => "travelingDoctor",
-            ArtifactSetName::PrayersForWisdom => "prayersForWisdom",
-            ArtifactSetName::PrayersToSpringtime => "prayersToSpringtime",
-            ArtifactSetName::PrayersForIllumination => "prayersForIllumination",
-            ArtifactSetName::PrayersForDestiny => "prayersForDestiny",
-            ArtifactSetName::PaleFlame => "paleFlame",
-            ArtifactSetName::TenacityOfTheMillelith => "tenacityOfTheMillelith",
-            ArtifactSetName::EmblemOfSeveredFate => "emblemOfSeveredFate",
-            ArtifactSetName::ShimenawaReminiscence => "shimenawaReminiscence",
-            ArtifactSetName::HuskOfOpulentDreams => "huskOfOpulentDreams",
-            ArtifactSetName::OceanHuedClam => "oceanHuedClam",
-            _ => same.as_str(),
-        };
-        String::from(temp)
+        match self.good_key() {
+            "GladiatorsFinale" => "gladiatorFinale".to_string(),
+            "Lavawalker" => "lavaWalker".to_string(),
+            "WanderersTroupe" => "wandererTroupe".to_string(),
+            "DefendersWill" => "defenderWill".to_string(),
+            "TheExile" => "exile".to_string(),
+            "ShimenawasReminiscence" => "shimenawaReminiscence".to_string(),
+            "CrimsonWitchOfFlames" => "crimsonWitch".to_string(),
+            "Thundersoother" => "thunderSmoother".to_string(),
+            key if self.id() <= 15022 => {
+                let mut chars = key.chars();
+                match chars.next() {
+                    Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            },
+            key => key.to_string(),
+        }
     }
 }
 
@@ -145,7 +121,10 @@ impl Serialize for MonaArtifact {
         root.serialize_entry("omit", &false)?;
         root.serialize_entry("level", &self.level)?;
         root.serialize_entry("star", &self.star)?;
-        root.serialize_entry("equip", &self.equip)?;
+        root.serialize_entry(
+            "equip",
+            &self.equip.as_ref().map(|character| character.name_zh_cn()),
+        )?;
         // let random_id = thread_rng().gen::<u64>();
         // root.serialize_entry("id", &random_id);
 
@@ -179,7 +158,7 @@ impl<'a> Serialize for MonaFormat<'a> {
 }
 
 impl<'a> MonaFormat<'a> {
-    pub fn new(results: &[GenshinArtifact]) -> MonaFormat {
+    pub fn new(results: &[GenshinArtifact]) -> MonaFormat<'_> {
         let mut flower: Vec<&MonaArtifact> = Vec::new();
         let mut feather: Vec<&MonaArtifact> = Vec::new();
         let mut cup: Vec<&MonaArtifact> = Vec::new();
@@ -204,5 +183,31 @@ impl<'a> MonaFormat<'a> {
             head,
             version: String::from("1"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::artifact::ArtifactCatalog;
+
+    #[test]
+    fn preserves_legacy_mona_set_aliases() {
+        let catalog = ArtifactCatalog::embedded().unwrap();
+        assert_eq!(
+            catalog
+                .find_piece(&["魔女的炎之花"])
+                .unwrap()
+                .set_name
+                .to_mona(),
+            "crimsonWitch"
+        );
+        assert_eq!(
+            catalog
+                .find_piece(&["平雷之心"])
+                .unwrap()
+                .set_name
+                .to_mona(),
+            "thunderSmoother"
+        );
     }
 }
