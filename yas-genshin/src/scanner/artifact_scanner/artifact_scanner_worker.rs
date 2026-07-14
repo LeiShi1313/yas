@@ -4,15 +4,14 @@ use std::thread::JoinHandle;
 
 use anyhow::Result;
 use edit_distance::edit_distance;
-use image::Rgb;
 use image::{GenericImageView, RgbImage};
 use log::{error, info, warn};
 
 use yas::ocr::{yas_ocr_model, ImageToText, PPOCRChV4RecInfer};
 use yas::positioning::{Pos, Rect};
-use yas::utils::color_distance;
 
 use crate::artifact::{ArtifactCatalog, ArtifactSlot, ArtifactStat, ArtifactStatName};
+use crate::scanner::artifact_lock_state::has_lock_marker;
 use crate::scanner::artifact_scanner::artifact_scanner_window_info::ArtifactScannerWindowInfo;
 use crate::scanner::artifact_scanner::message_items::SendItem;
 use crate::scanner::artifact_scanner::scan_result::GenshinArtifactScanResult;
@@ -180,21 +179,7 @@ fn get_page_locks_from_image(
         for c in 0..col {
             let pos_x = (gap.width + size.width) * c as f64 + lock_pos.x;
             let pos_y = (gap.height + size.height) * r as f64 + lock_pos.y;
-            let mut locked = false;
-            'square: for dx in -1..1 {
-                for dy in -10..10 {
-                    if pos_y as i32 + dy < 0 || (pos_y as i32 + dy) as u32 >= list_image.height() {
-                        continue;
-                    }
-                    let color = list_image
-                        .get_pixel((pos_x as i32 + dx) as u32, (pos_y as i32 + dy) as u32);
-                    if color_distance(color, &Rgb([255, 138, 117])) < 30 {
-                        locked = true;
-                        break 'square;
-                    }
-                }
-            }
-            result.push(locked);
+            result.push(has_lock_marker(list_image, pos_x as i32, pos_y as i32));
         }
     }
     result
