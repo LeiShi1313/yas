@@ -1,6 +1,7 @@
-use anyhow::anyhow;
-use anyhow::Result;
-use clap::{command, ArgMatches, Args};
+use std::fs;
+
+use anyhow::{Context, Result};
+use clap::{command, ArgMatches, Args, FromArgMatches};
 use log::{info, warn};
 
 use yas::export::{AssetEmitter, ExportAssets};
@@ -9,7 +10,10 @@ use yas::window_info::{load_window_info_repo, WindowInfoRepository};
 
 use crate::artifact::GenshinArtifact;
 use crate::export::artifact::{ExportArtifactConfig, GenshinArtifactExporter};
-use crate::scanner::{GenshinArtifactScanner, GenshinArtifactScannerConfig};
+use crate::scanner::{
+    GenshinArtifactLocker, GenshinArtifactLockerConfig, GenshinArtifactScanner,
+    GenshinArtifactScannerConfig, LockPlan,
+};
 use crate::scanner_controller::repository_layout::GenshinRepositoryScannerLogicConfig;
 
 pub struct ArtifactScannerApplication {
@@ -27,6 +31,7 @@ impl ArtifactScannerApplication {
         let mut cmd = command!();
         cmd = <ExportArtifactConfig as Args>::augment_args_for_update(cmd);
         cmd = <GenshinArtifactScannerConfig as Args>::augment_args_for_update(cmd);
+        cmd = <GenshinArtifactLockerConfig as Args>::augment_args_for_update(cmd);
         cmd = <GenshinRepositoryScannerLogicConfig as Args>::augment_args_for_update(cmd);
         cmd
     }
@@ -72,8 +77,31 @@ impl ArtifactScannerApplication {
         {
             // assure admin
             if !yas::utils::is_admin() {
-                return Err(anyhow!("请使用管理员运行"));
+                return Err(anyhow::anyhow!("请使用管理员运行"));
             }
+        }
+
+        let locker_config = GenshinArtifactLockerConfig::from_arg_matches(arg_matches)?;
+        if let Some(lock_file) = locker_config.lock_file {
+            let json = fs::read_to_string(&lock_file)
+                .with_context(|| format!("failed to read lock plan {}", lock_file.display()))?;
+            let plan = LockPlan::from_json(&json)
+                .with_context(|| format!("invalid lock plan {}", lock_file.display()))?;
+            let mut locker = GenshinArtifactLocker::from_arg_matches(
+                &window_info_repository,
+                arg_matches,
+                game_info,
+            )?;
+            let report = locker.execute(&plan)?;
+            info!(
+                "Artifact lock plan finished: processed={}, changed={}, already_desired={}, validated={}, interrupted={}",
+                report.processed,
+                report.changed,
+                report.already_desired,
+                report.validated,
+                report.interrupted
+            );
+            return Ok(());
         }
 
         let mut scanner = GenshinArtifactScanner::from_arg_matches(

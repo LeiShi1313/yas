@@ -508,7 +508,13 @@ impl GenshinRepositoryScanController {
                             selected_position(targets.as_deref(), scanned_count, row, col)
                         {
                             object.borrow().ensure_game_foreground()?;
-                            object.borrow_mut().select_item(row, col)?;
+                            if targets.is_some() {
+                                if scanned_count > 0 {
+                                    object.borrow_mut().select_target_item(row, col)?;
+                                }
+                            } else {
+                                object.borrow_mut().select_item(row, col)?;
+                            }
 
                             // have to make sure at this point no mut ref exists
                             yield position;
@@ -614,7 +620,7 @@ impl GenshinRepositoryScanController {
                                 selected_position(targets.as_deref(), scanned_count, row, col)
                             {
                                 object.borrow().ensure_game_foreground()?;
-                                object.borrow_mut().select_item(row, col)?;
+                                object.borrow_mut().select_target_item(row, col)?;
                                 yield position;
                             }
                             scanned_count += 1;
@@ -655,7 +661,7 @@ impl GenshinRepositoryScanController {
                                     selected_position(targets.as_deref(), scanned_count, row, col)
                                 {
                                     object.borrow().ensure_game_foreground()?;
-                                    object.borrow_mut().select_item(row, col)?;
+                                    object.borrow_mut().select_target_item(row, col)?;
                                     yield position;
                                 }
                                 scanned_count += 1;
@@ -1180,6 +1186,29 @@ impl GenshinRepositoryScanController {
             utils::sleep(self.config.scroll_delay.max(100) as u32);
         }
         Ok(())
+    }
+
+    fn select_target_item(&mut self, row: usize, col: usize) -> Result<()> {
+        for attempt in 0..2 {
+            self.move_to(row, col)?;
+            self.system_control.mouse_click()?;
+
+            #[cfg(target_os = "macos")]
+            utils::sleep(20);
+
+            if self.wait_until_switched().is_ok() {
+                return Ok(());
+            }
+            if attempt == 0 {
+                self.ensure_game_foreground()?;
+                utils::sleep(self.config.scroll_delay.max(100) as u32);
+            }
+        }
+        Err(anyhow!(
+            "failed to select repository target at row {}, column {}",
+            row,
+            col
+        ))
     }
 
     fn settle_panel_pool(&mut self) -> Result<()> {
