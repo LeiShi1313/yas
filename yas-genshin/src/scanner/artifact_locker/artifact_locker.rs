@@ -99,6 +99,17 @@ impl GenshinArtifactLocker {
     }
 
     fn get_item_count(&self) -> Result<usize> {
+        self.controller.borrow().ensure_game_foreground()?;
+        let image = self.capturer.capture_relative_to(
+            self.window_info.item_count_rect.to_rect_i32(),
+            self.game_info.window.origin(),
+        )?;
+        let text = self.image_to_text.image_to_text(&image, false)?;
+        info!("artifact count label: {text}");
+        if !text.contains("圣遗物") {
+            bail!("artifact inventory is not visible; recognized count label {text:?}");
+        }
+
         if let Some(count) = self.configured_item_count {
             if count > Self::MAX_COUNT {
                 bail!(
@@ -109,12 +120,6 @@ impl GenshinArtifactLocker {
             return Ok(count);
         }
 
-        let image = self.capturer.capture_relative_to(
-            self.window_info.item_count_rect.to_rect_i32(),
-            self.game_info.window.origin(),
-        )?;
-        let text = self.image_to_text.image_to_text(&image, false)?;
-        info!("artifact count label: {text}");
         parse_artifact_count(&text, Self::MAX_COUNT).with_context(|| {
             "could not safely determine the artifact count; pass --number with the exact count"
         })
@@ -247,5 +252,50 @@ impl GenshinArtifactLocker {
             }
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod window_info_tests {
+    use yas::game_info::{Platform, UI};
+    use yas::positioning::Size;
+    use yas::window_info::{load_window_info_repo, FromWindowInfoRepository};
+
+    use crate::scanner::artifact_scanner::ArtifactScannerWindowInfo;
+    use crate::scanner_controller::repository_layout::GenshinRepositoryScanControllerWindowInfo;
+
+    #[test]
+    fn every_bundled_windows_profile_contains_artifact_locking_coordinates() {
+        let repository = load_window_info_repo!(
+            "../../../window_info/windows1600x900.json",
+            "../../../window_info/windows1280x960.json",
+            "../../../window_info/windows1440x900.json",
+            "../../../window_info/windows2100x900.json",
+            "../../../window_info/windows3440x1440.json",
+        );
+
+        for (width, height) in [
+            (1600, 900),
+            (1280, 960),
+            (1440, 900),
+            (2100, 900),
+            (3440, 1440),
+        ] {
+            let size = Size { width, height };
+            ArtifactScannerWindowInfo::from_window_info_repository(
+                size,
+                UI::Desktop,
+                Platform::Windows,
+                &repository,
+            )
+            .unwrap();
+            GenshinRepositoryScanControllerWindowInfo::from_window_info_repository(
+                size,
+                UI::Desktop,
+                Platform::Windows,
+                &repository,
+            )
+            .unwrap();
+        }
     }
 }

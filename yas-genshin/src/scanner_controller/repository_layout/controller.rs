@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::ops::Coroutine;
+use std::ops::{Coroutine, CoroutineState};
+use std::pin::Pin;
 use std::rc::Rc;
 use std::time::SystemTime;
 
@@ -428,8 +429,15 @@ impl GenshinRepositoryScanController {
     pub fn get_generator(
         object: Rc<RefCell<GenshinRepositoryScanController>>,
         item_count: usize,
-    ) -> impl Coroutine<Yield = RepositoryItemPosition, Return = Result<ReturnResult>> {
-        Self::get_filtered_generator(object, item_count, None)
+    ) -> impl Coroutine<Yield = (), Return = Result<ReturnResult>> {
+        let mut generator = Self::get_filtered_generator(object, item_count, None);
+        #[coroutine]
+        move || loop {
+            match Pin::new(&mut generator).resume(()) {
+                CoroutineState::Yielded(_) => yield (),
+                CoroutineState::Complete(result) => return result,
+            }
+        }
     }
 
     pub fn get_target_generator(
@@ -620,7 +628,11 @@ impl GenshinRepositoryScanController {
                                 selected_position(targets.as_deref(), scanned_count, row, col)
                             {
                                 object.borrow().ensure_game_foreground()?;
-                                object.borrow_mut().select_target_item(row, col)?;
+                                if targets.is_some() {
+                                    object.borrow_mut().select_target_item(row, col)?;
+                                } else {
+                                    object.borrow_mut().select_item(row, col)?;
+                                }
                                 yield position;
                             }
                             scanned_count += 1;
@@ -661,7 +673,11 @@ impl GenshinRepositoryScanController {
                                     selected_position(targets.as_deref(), scanned_count, row, col)
                                 {
                                     object.borrow().ensure_game_foreground()?;
-                                    object.borrow_mut().select_target_item(row, col)?;
+                                    if targets.is_some() {
+                                        object.borrow_mut().select_target_item(row, col)?;
+                                    } else {
+                                        object.borrow_mut().select_item(row, col)?;
+                                    }
                                     yield position;
                                 }
                                 scanned_count += 1;
