@@ -373,11 +373,80 @@ pub enum ReturnResult {
     Finished,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RepositoryItemPosition {
+    pub index: usize,
+    pub row: usize,
+    pub col: usize,
+}
+
+fn selected_position(
+    targets: Option<&[usize]>,
+    index: usize,
+    row: usize,
+    col: usize,
+) -> Option<RepositoryItemPosition> {
+    if targets.is_some_and(|targets| targets.binary_search(&index).is_err()) {
+        return None;
+    }
+    Some(RepositoryItemPosition { index, row, col })
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::{selected_position, RepositoryItemPosition};
+
+    #[test]
+    fn selects_every_position_without_a_target_filter() {
+        assert_eq!(
+            selected_position(None, 7, 1, 2),
+            Some(RepositoryItemPosition {
+                index: 7,
+                row: 1,
+                col: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn selects_only_requested_indices_and_preserves_grid_position() {
+        let targets = [2, 7, 11];
+
+        assert_eq!(selected_position(Some(&targets), 6, 1, 1), None);
+        assert_eq!(
+            selected_position(Some(&targets), 7, 1, 2),
+            Some(RepositoryItemPosition {
+                index: 7,
+                row: 1,
+                col: 2,
+            })
+        );
+    }
+}
+
 impl GenshinRepositoryScanController {
     pub fn get_generator(
         object: Rc<RefCell<GenshinRepositoryScanController>>,
         item_count: usize,
-    ) -> impl Coroutine<Yield = (), Return = Result<ReturnResult>> {
+    ) -> impl Coroutine<Yield = RepositoryItemPosition, Return = Result<ReturnResult>> {
+        Self::get_filtered_generator(object, item_count, None)
+    }
+
+    pub fn get_target_generator(
+        object: Rc<RefCell<GenshinRepositoryScanController>>,
+        item_count: usize,
+        mut targets: Vec<usize>,
+    ) -> impl Coroutine<Yield = RepositoryItemPosition, Return = Result<ReturnResult>> {
+        targets.sort_unstable();
+        targets.dedup();
+        Self::get_filtered_generator(object, item_count, Some(targets))
+    }
+
+    fn get_filtered_generator(
+        object: Rc<RefCell<GenshinRepositoryScanController>>,
+        item_count: usize,
+        targets: Option<Vec<usize>>,
+    ) -> impl Coroutine<Yield = RepositoryItemPosition, Return = Result<ReturnResult>> {
         let generator = #[coroutine]
         move || {
             let mut scanned_row = 0;
@@ -435,12 +504,15 @@ impl GenshinRepositoryScanController {
                             return Ok(ReturnResult::Finished);
                         }
 
-                        object.borrow().ensure_game_foreground()?;
+                        if let Some(position) =
+                            selected_position(targets.as_deref(), scanned_count, row, col)
+                        {
+                            object.borrow().ensure_game_foreground()?;
+                            object.borrow_mut().select_item(row, col)?;
 
-                        object.borrow_mut().select_item(row, col)?;
-
-                        // have to make sure at this point no mut ref exists
-                        yield;
+                            // have to make sure at this point no mut ref exists
+                            yield position;
+                        }
 
                         scanned_count += 1;
                         object.borrow_mut().scanned_count = scanned_count;
@@ -535,12 +607,16 @@ impl GenshinRepositoryScanController {
                             controller.scan_start_row = (scanned_count - viewport_start) / columns;
                         }
                         while scanned_count < recovered_end {
-                            object.borrow().ensure_game_foreground()?;
                             let offset = scanned_count - viewport_start;
-                            object
-                                .borrow_mut()
-                                .select_item(offset / columns, offset % columns)?;
-                            yield;
+                            let row = offset / columns;
+                            let col = offset % columns;
+                            if let Some(position) =
+                                selected_position(targets.as_deref(), scanned_count, row, col)
+                            {
+                                object.borrow().ensure_game_foreground()?;
+                                object.borrow_mut().select_item(row, col)?;
+                                yield position;
+                            }
                             scanned_count += 1;
                             object.borrow_mut().scanned_count = scanned_count;
                         }
@@ -572,12 +648,16 @@ impl GenshinRepositoryScanController {
                                     (scanned_count - viewport_start) / columns;
                             }
                             while scanned_count < new_row_end {
-                                object.borrow().ensure_game_foreground()?;
                                 let offset = scanned_count - viewport_start;
-                                object
-                                    .borrow_mut()
-                                    .select_item(offset / columns, offset % columns)?;
-                                yield;
+                                let row = offset / columns;
+                                let col = offset % columns;
+                                if let Some(position) =
+                                    selected_position(targets.as_deref(), scanned_count, row, col)
+                                {
+                                    object.borrow().ensure_game_foreground()?;
+                                    object.borrow_mut().select_item(row, col)?;
+                                    yield position;
+                                }
                                 scanned_count += 1;
                                 object.borrow_mut().scanned_count = scanned_count;
                             }
