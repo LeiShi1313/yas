@@ -66,4 +66,7 @@ pub struct ArtifactScannerWindowInfo {
 
     #[window_info(rename = "genshin_repository_lock_pos")]
     pub lock_pos: Pos<f64>,
+
+    #[window_info(rename = "genshin_artifact_lock_pos")]
+    pub detail_lock_pos: Pos<f64>,
 }

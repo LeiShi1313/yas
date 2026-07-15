@@ -6,6 +6,12 @@
   "platform": "Windows",
   "ui": "Desktop",
   "data": {
+    "genshin_artifact_offset": {
+      "Size": {
+        "width": 0,
+        "height": 62.4
+      }
+    },
     "genshin_repository_panel_rect": {
       "Rect": {
         "top": 160,
@@ -74,8 +80,8 @@
     },
     "genshin_artifact_lock_pos": {
       "Pos": {
-        "x": 3114,
-        "y": 592
+        "x": 3058,
+        "y": 613
       }
     },
     "genshin_artifact_main_stat_name_rect": {
