@@ -841,9 +841,19 @@ impl GenshinRepositoryScanController {
             // to establish the first row.
             self.drag_scrollbar(geometry, 0.0)?;
             self.absolute_scroll_count += 1;
-            geometry = detect_scrollbar_geometry(&self.capture_scrollbar()?).ok_or_else(|| {
-                anyhow!("lost scrollbar geometry after returning to the first artifact row")
-            })?;
+            // Hovering the thumb changes its contrast in Genshin. Move back
+            // over the grid before verifying the post-drag geometry.
+            self.move_to(0, 0)?;
+            utils::sleep(60);
+            let Some(updated_geometry) =
+                detect_scrollbar_geometry(&self.capture_scrollbar()?)
+            else {
+                info!(
+                    "lost scrollbar geometry after direct positioning; using wheel fallback"
+                );
+                return Ok(false);
+            };
+            geometry = updated_geometry;
             if previous_center
                 .map(|center: f64| (center - geometry.thumb_center()).abs() <= 1.0)
                 .unwrap_or(false)
@@ -859,9 +869,8 @@ impl GenshinRepositoryScanController {
             );
             previous_center = Some(geometry.thumb_center());
         }
-        Err(anyhow!(
-            "unable to verify the first artifact row after direct scrollbar positioning"
-        ))
+        info!("direct scrollbar positioning was inconclusive; using wheel fallback");
+        Ok(false)
     }
 
     #[cfg(not(windows))]

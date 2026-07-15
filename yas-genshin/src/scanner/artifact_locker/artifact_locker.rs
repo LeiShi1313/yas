@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use clap::FromArgMatches;
-use image::RgbImage;
+use image::{GenericImageView, RgbImage};
 use log::info;
 
 use yas::capture::{Capturer, GenericCapturer};
@@ -25,7 +25,8 @@ use crate::scanner_controller::repository_layout::{
 };
 
 use super::{
-    desired_lock_state, parse_artifact_count, GenshinArtifactLockerConfig, LockPlan, LockPlanEntry,
+    desired_lock_state, parse_artifact_inventory_count, resolve_artifact_item_count,
+    GenshinArtifactLockerConfig, LockPlan, LockPlanEntry,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,8 +50,6 @@ pub struct GenshinArtifactLocker {
 }
 
 impl GenshinArtifactLocker {
-    const MAX_COUNT: usize = 2400;
-
     pub fn from_arg_matches(
         window_info_repo: &WindowInfoRepository,
         arg_matches: &clap::ArgMatches,
@@ -73,18 +72,19 @@ impl GenshinArtifactLocker {
             "../artifact_scanner/models/index_2_word.json"
         )?);
 
+        let mut controller = GenshinRepositoryScanController::from_arg_matches(
+            window_info_repo,
+            arg_matches,
+            game_info.clone(),
+            true,
+        )?;
+        controller.set_restore_focus(true);
+
         Ok(Self {
             config,
             configured_item_count,
             window_info,
-            controller: Rc::new(RefCell::new(
-                GenshinRepositoryScanController::from_arg_matches(
-                    window_info_repo,
-                    arg_matches,
-                    game_info.clone(),
-                    true,
-                )?,
-            )),
+            controller: Rc::new(RefCell::new(controller)),
             game_info,
             image_to_text,
             capturer: Rc::new(GenericCapturer::new()?),
@@ -105,24 +105,27 @@ impl GenshinArtifactLocker {
             self.game_info.window.origin(),
         )?;
         let text = self.image_to_text.image_to_text(&image, false)?;
-        info!("artifact count label: {text}");
-        if !text.contains("圣遗物") {
-            bail!("artifact inventory is not visible; recognized count label {text:?}");
-        }
+        let capacity_crop_left = image.width() * 2 / 3;
+        let capacity_image = image
+            .view(
+                capacity_crop_left,
+                0,
+                image.width() - capacity_crop_left,
+                image.height(),
+            )
+            .to_image();
+        let capacity_text = self.image_to_text.image_to_text(&capacity_image, false)?;
+        info!("artifact count label: {text}; capacity segment: {capacity_text}");
+        let inventory =
+            parse_artifact_inventory_count(&text, Some(&capacity_text)).with_context(|| {
+                "could not safely determine the artifact inventory count and capacity"
+            })?;
+        info!(
+            "artifact inventory count: {}, capacity: {}",
+            inventory.current, inventory.capacity
+        );
 
-        if let Some(count) = self.configured_item_count {
-            if count > Self::MAX_COUNT {
-                bail!(
-                    "configured artifact count {count} exceeds the supported maximum {}",
-                    Self::MAX_COUNT
-                );
-            }
-            return Ok(count);
-        }
-
-        parse_artifact_count(&text, Self::MAX_COUNT).with_context(|| {
-            "could not safely determine the artifact count; pass --number with the exact count"
-        })
+        resolve_artifact_item_count(inventory, self.configured_item_count)
     }
 
     fn capture_lock_state(&self, position: RepositoryItemPosition) -> Result<bool> {
@@ -148,10 +151,11 @@ impl GenshinArtifactLocker {
         Ok(has_lock_marker(&image, 1, 10))
     }
 
-    fn click_lock_button(&mut self) -> Result<()> {
+    fn click_lock_button(&mut self, vertical_offset: i32) -> Result<()> {
         self.controller.borrow().ensure_game_foreground()?;
         let x = self.game_info.window.left + self.window_info.detail_lock_pos.x as i32;
-        let y = self.game_info.window.top + self.window_info.detail_lock_pos.y as i32;
+        let y =
+            self.game_info.window.top + self.window_info.detail_lock_pos.y as i32 + vertical_offset;
         self.system_control
             .mouse_move_to(x, y)
             .with_context(|| format!("failed to move to the artifact lock button at ({x}, {y})"))?;
@@ -161,6 +165,31 @@ impl GenshinArtifactLocker {
             .context("failed to click the artifact lock button")?;
         utils::sleep(self.config.lock_stop);
         Ok(())
+    }
+
+    fn change_lock_state(&mut self, position: RepositoryItemPosition, desired: bool) -> Result<()> {
+        // Genshin 6.7 inserts a definition banner above the controls for some
+        // artifacts, moving both the lock and star buttons down by 37px at
+        // 1920x1080. The base and shifted rows are both verified against the
+        // lock marker in the repository grid before execution continues.
+        let definition_banner_shift =
+            (self.game_info.window.height as f64 * 37.0 / 1080.0).round() as i32;
+        let mut last_error = None;
+        for vertical_offset in [0, definition_banner_shift] {
+            self.click_lock_button(vertical_offset)?;
+            match self.wait_for_lock_state(position, desired) {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("artifact lock state did not change")))
+            .with_context(|| {
+                format!(
+                    "lock button did not set artifact index {} to {} at either supported detail-row position",
+                    position.index,
+                    if desired { "locked" } else { "unlocked" }
+                )
+            })
     }
 
     fn wait_for_lock_state(&self, position: RepositoryItemPosition, desired: bool) -> Result<()> {
@@ -184,6 +213,7 @@ impl GenshinArtifactLocker {
         entry: LockPlanEntry,
         position: RepositoryItemPosition,
         report: &mut GenshinArtifactLockReport,
+        changed_states: &mut Vec<(usize, bool)>,
     ) -> Result<()> {
         let current = self.capture_lock_state(position)?;
         if entry.expected.is_some() {
@@ -195,14 +225,120 @@ impl GenshinArtifactLocker {
                 report.interrupted = true;
                 return Ok(());
             }
-            self.click_lock_button()?;
-            self.wait_for_lock_state(position, desired)?;
+            // Record the original state before clicking. If the click succeeds
+            // but its verification fails, rollback can still restore this target.
+            changed_states.push((entry.target, current));
+            self.change_lock_state(position, desired)?;
             report.changed += 1;
         } else if entry.change.is_some() {
             report.already_desired += 1;
         }
         report.processed += 1;
         Ok(())
+    }
+
+    fn preflight_validations(&mut self, plan: &LockPlan, item_count: usize) -> Result<()> {
+        let validation_entries = plan
+            .entries()
+            .iter()
+            .copied()
+            .filter(|entry| entry.expected.is_some())
+            .collect::<Vec<_>>();
+        if validation_entries.is_empty() {
+            return Ok(());
+        }
+
+        let targets = validation_entries
+            .iter()
+            .map(|entry| entry.target)
+            .collect();
+        let mut generator = GenshinRepositoryScanController::get_target_generator(
+            self.controller.clone(),
+            item_count,
+            targets,
+        );
+        for entry in validation_entries {
+            let position = match Pin::new(&mut generator).resume(()) {
+                CoroutineState::Yielded(position) if position.index == entry.target => position,
+                CoroutineState::Yielded(position) => bail!(
+                    "validation navigation yielded index {}, expected {}",
+                    position.index,
+                    entry.target
+                ),
+                CoroutineState::Complete(Ok(ReturnResult::Interrupted)) => {
+                    bail!("artifact lock validation preflight was interrupted")
+                },
+                CoroutineState::Complete(Ok(ReturnResult::Finished)) => {
+                    bail!("validation navigation ended before index {}", entry.target)
+                },
+                CoroutineState::Complete(Err(error)) => return Err(error),
+            };
+            let current = self.capture_lock_state(position)?;
+            desired_lock_state(
+                LockPlanEntry {
+                    change: None,
+                    ..entry
+                },
+                current,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn rollback_changes(
+        &mut self,
+        item_count: usize,
+        changed_states: &[(usize, bool)],
+    ) -> Result<()> {
+        if changed_states.is_empty() {
+            return Ok(());
+        }
+
+        let targets = changed_states.iter().map(|(target, _)| *target).collect();
+        let mut generator = GenshinRepositoryScanController::get_target_generator(
+            self.controller.clone(),
+            item_count,
+            targets,
+        );
+        for &(target, original) in changed_states {
+            let position = match Pin::new(&mut generator).resume(()) {
+                CoroutineState::Yielded(position) if position.index == target => position,
+                CoroutineState::Yielded(position) => bail!(
+                    "rollback navigation yielded index {}, expected {}",
+                    position.index,
+                    target
+                ),
+                CoroutineState::Complete(Ok(ReturnResult::Interrupted)) => {
+                    bail!("artifact lock rollback was interrupted")
+                },
+                CoroutineState::Complete(Ok(ReturnResult::Finished)) => {
+                    bail!("rollback navigation ended before index {target}")
+                },
+                CoroutineState::Complete(Err(error)) => return Err(error),
+            };
+            let current = self.capture_lock_state(position)?;
+            if current != original {
+                self.change_lock_state(position, original)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn error_after_rollback(
+        &mut self,
+        error: anyhow::Error,
+        item_count: usize,
+        changed_states: &[(usize, bool)],
+    ) -> anyhow::Error {
+        let changed_count = changed_states.len();
+        match self.rollback_changes(item_count, changed_states) {
+            Ok(()) => error.context(format!(
+                "artifact lock plan failed with {changed_count} touched targets; all touched targets were restored to their original states"
+            )),
+            Err(rollback_error) => error.context(format!(
+                "artifact lock plan failed with {changed_count} touched targets; rollback also failed: {rollback_error:#}"
+            )),
+        }
     }
 
     pub fn execute(&mut self, plan: &LockPlan) -> Result<GenshinArtifactLockReport> {
@@ -217,36 +353,53 @@ impl GenshinArtifactLocker {
             bail!("artifact lock target {last_target} is outside the inventory count {item_count}");
         }
 
+        self.preflight_validations(plan, item_count)
+            .context("artifact lock validation preflight failed before any changes")?;
+
         let targets = plan.entries().iter().map(|entry| entry.target).collect();
         let mut generator = GenshinRepositoryScanController::get_target_generator(
             self.controller.clone(),
             item_count,
             targets,
         );
+        let mut changed_states = Vec::new();
         for entry in plan.entries().iter().copied() {
             let position = match Pin::new(&mut generator).resume(()) {
                 CoroutineState::Yielded(position) if position.index == entry.target => position,
-                CoroutineState::Yielded(position) => bail!(
-                    "repository navigation yielded index {}, expected {}",
-                    position.index,
-                    entry.target
-                ),
+                CoroutineState::Yielded(position) => {
+                    let error = anyhow::anyhow!(
+                        "repository navigation yielded index {}, expected {}",
+                        position.index,
+                        entry.target
+                    );
+                    return Err(self.error_after_rollback(error, item_count, &changed_states));
+                },
                 CoroutineState::Complete(Ok(ReturnResult::Interrupted)) => {
                     report.interrupted = true;
                     break;
                 },
                 CoroutineState::Complete(Ok(ReturnResult::Finished)) => {
-                    bail!("repository navigation ended before index {}", entry.target)
+                    let error = anyhow::anyhow!(
+                        "repository navigation ended before index {}",
+                        entry.target
+                    );
+                    return Err(self.error_after_rollback(error, item_count, &changed_states));
                 },
-                CoroutineState::Complete(Err(error)) => return Err(error),
+                CoroutineState::Complete(Err(error)) => {
+                    return Err(self.error_after_rollback(error, item_count, &changed_states));
+                },
             };
-            self.apply_entry(entry, position, &mut report)
+            if let Err(error) = self
+                .apply_entry(entry, position, &mut report, &mut changed_states)
                 .with_context(|| {
                     format!(
                         "artifact lock plan stopped at index {} after {} confirmed changes",
                         entry.target, report.changed
                     )
-                })?;
+                })
+            {
+                return Err(self.error_after_rollback(error, item_count, &changed_states));
+            }
             if report.interrupted {
                 break;
             }
@@ -296,6 +449,44 @@ mod window_info_tests {
                 &repository,
             )
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn bundled_lock_button_coordinates_match_the_verified_layouts() {
+        let repository = load_window_info_repo!(
+            "../../../window_info/windows1600x900.json",
+            "../../../window_info/windows1280x960.json",
+            "../../../window_info/windows1440x900.json",
+            "../../../window_info/windows2100x900.json",
+            "../../../window_info/windows3440x1440.json",
+        );
+
+        for (width, height, expected_x, expected_y) in [
+            (1280, 960, 1131.0, 294.0),
+            (1440, 900, 1273.0, 331.0),
+            (1600, 900, 1415.0, 369.0),
+            (1920, 1080, 1698.0, 442.8),
+            (2100, 900, 1861.0, 383.0),
+            (3440, 1440, 3058.0, 613.0),
+        ] {
+            let info = ArtifactScannerWindowInfo::from_window_info_repository(
+                Size { width, height },
+                UI::Desktop,
+                Platform::Windows,
+                &repository,
+            )
+            .unwrap();
+            assert!(
+                (info.detail_lock_pos.x - expected_x).abs() < 0.01,
+                "unexpected lock x at {width}x{height}: {}",
+                info.detail_lock_pos.x
+            );
+            assert!(
+                (info.detail_lock_pos.y - expected_y).abs() < 0.01,
+                "unexpected lock y at {width}x{height}: {}",
+                info.detail_lock_pos.y
+            );
         }
     }
 }

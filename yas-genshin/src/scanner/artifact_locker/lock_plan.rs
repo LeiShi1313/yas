@@ -22,6 +22,7 @@ pub struct LockPlan {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LockFormatV2 {
     version: u32,
     #[serde(default)]
@@ -35,6 +36,7 @@ struct LockFormatV2 {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LockValidationRecord {
     index: usize,
     locked: bool,
@@ -201,5 +203,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("conflicting changes for index 4"));
+    }
+
+    #[test]
+    fn rejects_unknown_v2_fields_instead_of_silently_doing_nothing() {
+        let error = LockPlan::from_json(
+            r#"{
+                "version": 2,
+                "validations": [{"index": 0, "locked": true}]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `validations`"));
     }
 }
