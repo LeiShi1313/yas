@@ -2,20 +2,20 @@ use std::ffi::{OsStr, OsString};
 use std::iter::once;
 use std::marker::PhantomPinned;
 use std::mem::transmute;
-use std::os::windows::ffi::{OsStringExt, OsStrExt};
-use std::pin::{Pin, pin};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::pin::{pin, Pin};
 use std::ptr::{null, null_mut, slice_from_raw_parts_mut};
 
+use crate::positioning::Rect;
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::Security::*;
+use windows_sys::Win32::System::LibraryLoader::*;
+use windows_sys::Win32::System::SystemServices::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use windows_sys::Win32::System::SystemServices::*;
-use windows_sys::Win32::System::LibraryLoader::*;
-use crate::positioning::Rect;
 
 pub fn encode_lpcstr(s: &str) -> Vec<u8> {
     let mut arr: Vec<u8> = s.bytes().map(|x| x as u8).collect();
@@ -81,12 +81,49 @@ unsafe fn get_client_rect_unsafe(hwnd: HWND) -> Result<Rect<i32>> {
         left,
         top,
         width,
-        height
+        height,
     })
 }
 
 pub fn get_client_rect(hwnd: HWND) -> Result<Rect<i32>> {
     unsafe { get_client_rect_unsafe(hwnd) }
+}
+
+pub fn resize_client_area(hwnd: HWND, width: i32, height: i32) -> Result<Rect<i32>> {
+    if width <= 0 || height <= 0 {
+        return Err(anyhow!(
+            "client size must be positive, got {width}x{height}"
+        ));
+    }
+
+    unsafe {
+        ShowWindow(hwnd, SW_RESTORE);
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        let extended_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        let mut outer = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        if AdjustWindowRectEx(&mut outer, style, 0, extended_style) == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if SetWindowPos(
+            hwnd,
+            null_mut(),
+            0,
+            0,
+            outer.right - outer.left,
+            outer.bottom - outer.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+
+    get_client_rect(hwnd)
 }
 
 unsafe fn is_admin_unsafe() -> bool {
@@ -152,7 +189,10 @@ pub fn set_dpi_awareness() {
                 SetProcessDPIAware();
             } else {
                 let proc = addr.unwrap();
-                let func = transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn(usize) -> isize>(proc);
+                let func = transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    unsafe extern "system" fn(usize) -> isize,
+                >(proc);
                 func(2);
             }
 
@@ -193,9 +233,7 @@ unsafe fn iterate_window_unsafe() -> Vec<HWND> {
 }
 
 pub fn iterate_window() -> Vec<HWND> {
-    unsafe {
-        iterate_window_unsafe()
-    }
+    unsafe { iterate_window_unsafe() }
 }
 
 unsafe fn get_window_title_unsafe(hwnd: HWND) -> Option<String> {
@@ -213,7 +251,5 @@ unsafe fn get_window_title_unsafe(hwnd: HWND) -> Option<String> {
 }
 
 pub fn get_window_title(hwnd: HWND) -> Option<String> {
-    unsafe {
-        get_window_title_unsafe(hwnd)
-    }
+    unsafe { get_window_title_unsafe(hwnd) }
 }

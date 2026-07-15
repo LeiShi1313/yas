@@ -11,9 +11,9 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::FromArgMatches;
-use image::RgbImage;
+use image::{GenericImageView, RgbImage};
 use log::info;
 
 use yas::capture::{Capturer, GenericCapturer};
@@ -24,6 +24,9 @@ use yas::window_info::FromWindowInfoRepository;
 use yas::window_info::WindowInfoRepository;
 
 use crate::artifact::ArtifactCatalog;
+use crate::scanner::artifact_locker::{
+    parse_artifact_inventory_count, resolve_artifact_item_count,
+};
 use crate::scanner::artifact_scanner::artifact_scanner_worker::ArtifactScannerWorker;
 use crate::scanner::artifact_scanner::message_items::SendItem;
 use crate::scanner::artifact_scanner::scan_result::GenshinArtifactScanResult;
@@ -52,10 +55,6 @@ pub struct GenshinArtifactScanner {
     catalog: Arc<ArtifactCatalog>,
     controller: Rc<RefCell<GenshinRepositoryScanController>>,
     capturer: Rc<dyn Capturer<RgbImage>>,
-}
-
-impl GenshinArtifactScanner {
-    pub const MAX_COUNT: usize = 2400;
 }
 
 // constructor
@@ -254,32 +253,33 @@ impl GenshinArtifactScanner {
     }
 
     pub fn get_item_count(&self) -> Result<i32> {
-        if self.scanner_config.number > 0 {
-            return Ok(self.scanner_config.number);
-        }
-
-        let item_name = "圣遗物";
-
-        let max_count = Self::MAX_COUNT as i32;
         let im = self.capturer.capture_relative_to(
             self.window_info.item_count_rect.to_rect_i32(),
             self.game_info.window.origin(),
         )?;
-        // im.save("item_count.png")?;
-        let s = self.image_to_text.image_to_text(&im, false)?;
+        let text = self.image_to_text.image_to_text(&im, false)?;
+        let capacity_crop_left = im.width() * 2 / 3;
+        let capacity_image = im
+            .view(
+                capacity_crop_left,
+                0,
+                im.width() - capacity_crop_left,
+                im.height(),
+            )
+            .to_image();
+        let capacity_text = self.image_to_text.image_to_text(&capacity_image, false)?;
+        info!("artifact count label: {text}; capacity segment: {capacity_text}");
 
-        info!("物品信息: {}", s);
-
-        if s.starts_with(item_name) {
-            let chars = s.chars().collect::<Vec<char>>();
-            let count_str = chars[4..chars.len() - 5].iter().collect::<String>();
-            Ok(match count_str.parse::<usize>() {
-                Ok(v) => (v as i32).min(max_count),
-                Err(_) => max_count,
-            })
-        } else {
-            Ok(max_count)
-        }
+        let inventory = parse_artifact_inventory_count(&text, Some(&capacity_text))
+            .with_context(|| "could not safely determine the artifact inventory count")?;
+        let configured =
+            (self.scanner_config.number > 0).then_some(self.scanner_config.number as usize);
+        let count = resolve_artifact_item_count(inventory, configured)?;
+        info!(
+            "artifact inventory count: {}, capacity: {}, scanning: {}",
+            inventory.current, inventory.capacity, count
+        );
+        i32::try_from(count).context("artifact count exceeds the supported scanner range")
     }
 
     pub fn scan(&mut self) -> Result<Vec<GenshinArtifactScanResult>> {
