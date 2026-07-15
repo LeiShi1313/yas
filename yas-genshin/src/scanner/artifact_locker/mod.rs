@@ -5,5 +5,6 @@ mod lock_plan;
 
 pub use artifact_locker::{GenshinArtifactLockReport, GenshinArtifactLocker};
 pub use config::GenshinArtifactLockerConfig;
-use executor::{desired_lock_state, parse_artifact_inventory_count, resolve_artifact_item_count};
+use executor::desired_lock_state;
+pub(crate) use executor::{parse_artifact_inventory_count, resolve_artifact_item_count};
 pub use lock_plan::{LockChange, LockPlan, LockPlanEntry};

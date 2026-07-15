@@ -96,16 +96,18 @@ fn is_semantically_blank(text: &str) -> bool {
     !text.chars().any(char::is_alphanumeric)
 }
 
-fn next_consecutive_duplicate_count<T: PartialEq>(
-    previous: Option<&T>,
-    current: &T,
-    current_count: i32,
-) -> i32 {
-    if previous == Some(current) {
-        current_count + 1
-    } else {
-        0
-    }
+fn recognition_identity(result: &GenshinArtifactScanResult) -> GenshinArtifactScanResult {
+    let mut identity = result.clone();
+    // Lock state is sampled from the grid position, not from the detail panel.
+    // Ignoring it here prevents a stale panel from looking unique merely
+    // because the requested positions have different lock icons.
+    identity.lock = false;
+    identity
+}
+
+fn contains_equipped_marker(text: &str) -> bool {
+    const EQUIPPED_MARKER: &str = "\u{5df2}\u{88c5}\u{5907}";
+    text.contains(EQUIPPED_MARKER)
 }
 
 fn extract_stat_prefix(text: &str) -> Option<String> {
@@ -318,13 +320,24 @@ impl ArtifactScannerWorker {
             return Ok(format!("{}已装备", matched.character.name_zh_cn()));
         }
 
-        warn!("未知装备角色: fast=`{fast}`, general=`{general}`");
+        if contains_equipped_marker(&fast) || contains_equipped_marker(&general) {
+            warn!("未知装备角色: fast=`{fast}`, general=`{general}`");
+        }
         Ok(String::new())
     }
 
     /// Parse the captured result (of type SendItem) to a scanned artifact
-    fn scan_item_image(&self, item: SendItem, lock: bool) -> Result<GenshinArtifactScanResult> {
+    fn scan_item_image(
+        &self,
+        item: SendItem,
+        grid_lock: bool,
+    ) -> Result<GenshinArtifactScanResult> {
         let image = &item.panel_image;
+        // The red lock marker is a grid-only visual. The detail-panel lock
+        // control uses a different palette, so running the grid detector over
+        // the panel produced false lock states in GOOD exports. `grid_lock`
+        // was captured from the same repository page as this selected item.
+        let lock = grid_lock;
 
         let str_title = self.recognize_title(image)?;
         let str_main_stat_name =
@@ -446,7 +459,6 @@ impl ArtifactScannerWorker {
             let worker_count = workers.len();
             let is_verbose = workers[0].config.verbose;
             let min_level = workers[0].config.min_level;
-            let ignore_dup = workers[0].config.ignore_dup;
             let info = workers[0].window_info.clone();
             let mut job_senders = Vec::with_capacity(worker_count);
             let mut worker_handles = Vec::with_capacity(worker_count);
@@ -518,9 +530,6 @@ impl ArtifactScannerWorker {
             let mut results = Vec::new();
             let mut errors = Vec::new();
             let mut hash: HashSet<GenshinArtifactScanResult> = HashSet::new();
-            let mut consecutive_dup_count = 0;
-            let mut previous_result = None;
-
             for (index, result) in indexed_results {
                 let result = match result {
                     Ok(result) => result,
@@ -537,28 +546,11 @@ impl ArtifactScannerWorker {
                     break;
                 }
 
-                consecutive_dup_count = next_consecutive_duplicate_count(
-                    previous_result.as_ref(),
-                    &result,
-                    consecutive_dup_count,
-                );
-                previous_result = Some(result.clone());
-
-                if !hash.insert(result.clone()) {
+                let identity = recognition_identity(&result);
+                if !hash.insert(identity) {
                     warn!("duplicate artifact: {result:#?}");
                 }
                 results.push(result.clone());
-
-                if consecutive_dup_count >= info.col && !ignore_dup {
-                    let message = format!(
-                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale; repeated result: {result:#?}",
-                        index + 1,
-                        consecutive_dup_count,
-                    );
-                    error!("{}", message);
-                    errors.push(message);
-                    break;
-                }
             }
 
             info!(
@@ -575,13 +567,8 @@ impl ArtifactScannerWorker {
             let mut results = Vec::new();
             let mut errors = Vec::new();
             let mut hash: HashSet<GenshinArtifactScanResult> = HashSet::new();
-            // if too many artifacts are same in consecutive, then an error has occurred
-            let mut consecutive_dup_count = 0;
-            let mut previous_result = None;
-
             let is_verbose = self.config.verbose;
             let min_level = self.config.min_level;
-            let info = self.window_info.clone();
             // todo remove dump mode to another scanner
             // let dump_mode = false;
             // let model = self.model.clone();
@@ -627,30 +614,13 @@ impl ArtifactScannerWorker {
                     break;
                 }
 
-                consecutive_dup_count = next_consecutive_duplicate_count(
-                    previous_result.as_ref(),
-                    &result,
-                    consecutive_dup_count,
-                );
-                previous_result = Some(result.clone());
-
-                if hash.contains(&result) {
+                let identity = recognition_identity(&result);
+                if hash.contains(&identity) {
                     warn!("识别到重复物品: {:#?}", result);
                 } else {
-                    hash.insert(result.clone());
+                    hash.insert(identity);
                 }
                 results.push(result.clone());
-
-                if consecutive_dup_count >= info.col && !self.config.ignore_dup {
-                    let message = format!(
-                        "item {}: detected {} consecutive duplicate artifacts; page selection may be stale; repeated result: {result:#?}",
-                        artifact_index, consecutive_dup_count,
-                    );
-                    error!("{}", message);
-                    errors.push(message);
-                    // token.cancel();
-                    break;
-                }
 
                 // if token.cancelled() {
                 // error!("扫描任务被取消");
@@ -675,9 +645,10 @@ impl ArtifactScannerWorker {
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_pending_marker, infer_max_level_from_main_stat, next_consecutive_duplicate_count,
-        parse_artifact_level,
+        contains_equipped_marker, contains_pending_marker, infer_max_level_from_main_stat,
+        parse_artifact_level, recognition_identity,
     };
+    use crate::scanner::artifact_scanner::scan_result::GenshinArtifactScanResult;
 
     #[test]
     fn rejects_levels_above_the_rarity_cap() {
@@ -697,11 +668,31 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_streak_only_counts_adjacent_identical_results() {
-        assert_eq!(next_consecutive_duplicate_count(Some(&1), &1, 0), 1);
-        assert_eq!(next_consecutive_duplicate_count(Some(&1), &1, 7), 8);
-        assert_eq!(next_consecutive_duplicate_count(Some(&1), &2, 7), 0);
-        assert_eq!(next_consecutive_duplicate_count::<i32>(None, &1, 7), 0);
+    fn duplicate_identity_ignores_grid_lock_state() {
+        let result = GenshinArtifactScanResult {
+            name: "test".to_string(),
+            main_stat_name: "test".to_string(),
+            main_stat_value: "1".to_string(),
+            sub_stat: std::array::from_fn(|_| String::new()),
+            sub_stat_active: [true; 4],
+            equip: String::new(),
+            level: 0,
+            star: 5,
+            lock: true,
+        };
+
+        let mut unlocked = result.clone();
+        unlocked.lock = false;
+        assert_eq!(
+            recognition_identity(&result),
+            recognition_identity(&unlocked)
+        );
+    }
+
+    #[test]
+    fn unknown_equip_warning_requires_an_equipped_marker() {
+        assert!(contains_equipped_marker("奈芙尔已装备"));
+        assert!(!contains_equipped_marker("别，有不同的设计。"));
     }
 
     #[test]

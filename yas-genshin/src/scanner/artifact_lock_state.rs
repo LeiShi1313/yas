@@ -5,8 +5,11 @@ const LOCK_MARKER_COLOR: Rgb<u8> = Rgb([255, 138, 117]);
 const LOCK_MARKER_COLOR_DISTANCE: usize = 30;
 
 pub(crate) fn has_lock_marker(image: &RgbImage, center_x: i32, center_y: i32) -> bool {
-    for dx in -1..1 {
-        for dy in -10..10 {
+    // The artifact grid crop can clip the upper half of the first-row icon.
+    // Search farther above the legacy profile point while keeping the strict
+    // marker color check so nearby rarity/background colors are rejected.
+    for dx in -2..=2 {
+        for dy in -20..=10 {
             let x = center_x + dx;
             let y = center_y + dy;
             if x < 0 || y < 0 || x >= image.width() as i32 || y >= image.height() as i32 {
@@ -52,5 +55,13 @@ mod tests {
         image.put_pixel(0, 0, Rgb([255, 138, 117]));
 
         assert!(has_lock_marker(&image, 0, 0));
+    }
+
+    #[test]
+    fn detects_a_top_row_marker_clipped_above_the_profile_center() {
+        let mut image = RgbImage::new(30, 30);
+        image.put_pixel(12, 0, Rgb([255, 138, 117]));
+
+        assert!(has_lock_marker(&image, 12, 14));
     }
 }

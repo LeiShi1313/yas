@@ -280,7 +280,14 @@ impl GenshinArtifactLocker {
                     ..entry
                 },
                 current,
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "artifact lock validation failed at index {} (detected state: {})",
+                    entry.target,
+                    if current { "locked" } else { "unlocked" }
+                )
+            })?;
         }
         Ok(())
     }

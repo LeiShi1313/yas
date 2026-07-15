@@ -97,6 +97,27 @@ fn calc_pool(row: &[u8]) -> f32 {
     pool
 }
 
+fn is_selected_border_pixel(pixel: &image::Rgb<u8>) -> bool {
+    let min = *pixel.0.iter().min().unwrap();
+    let max = *pixel.0.iter().max().unwrap();
+    min >= 235 && max - min <= 20
+}
+
+fn best_vertical_border_score(image: &RgbImage, expected_x: i32, y_start: u32, y_end: u32) -> f64 {
+    (-8..=8)
+        .filter_map(|offset| {
+            let x = expected_x + offset;
+            if x < 0 || x >= image.width() as i32 || y_start >= y_end {
+                return None;
+            }
+            let selected = (y_start..y_end)
+                .filter(|&y| is_selected_border_pixel(image.get_pixel(x as u32, y)))
+                .count();
+            Some(selected as f64 / (y_end - y_start) as f64)
+        })
+        .fold(0.0, f64::max)
+}
+
 fn get_capturer() -> Result<Rc<dyn Capturer<RgbImage>>> {
     Ok(Rc::new(GenericCapturer::new()?))
 }
@@ -845,12 +866,9 @@ impl GenshinRepositoryScanController {
             // over the grid before verifying the post-drag geometry.
             self.move_to(0, 0)?;
             utils::sleep(60);
-            let Some(updated_geometry) =
-                detect_scrollbar_geometry(&self.capture_scrollbar()?)
+            let Some(updated_geometry) = detect_scrollbar_geometry(&self.capture_scrollbar()?)
             else {
-                info!(
-                    "lost scrollbar geometry after direct positioning; using wheel fallback"
-                );
+                info!("lost scrollbar geometry after direct positioning; using wheel fallback");
                 return Ok(false);
             };
             geometry = updated_geometry;
@@ -1164,22 +1182,7 @@ impl GenshinRepositoryScanController {
     }
 
     pub fn move_to(&mut self, row: usize, col: usize) -> Result<()> {
-        let (row, col) = (row as u32, col as u32);
-        let origin = self.game_info.window.to_rect_f64().origin();
-
-        let gap = self.window_info.item_gap_size;
-        let mut margin = self.window_info.scan_margin_pos;
-        let size = self.window_info.item_size;
-        if self.is_artifact {
-            margin = margin + self.window_info.artifact_panel_offset;
-        }
-
-        let left = origin.x + margin.x + (gap.width + size.width) * (col as f64) + size.width / 2.0;
-        let top = origin.y
-            + margin.y
-            + self.scroll_offset_y
-            + (gap.height + size.height) * (row as f64)
-            + size.height / 4.0;
+        let (left, top) = self.item_origin(row, col);
 
         self.system_control
             .mouse_move_to(left as i32, top as i32)
@@ -1197,31 +1200,128 @@ impl GenshinRepositoryScanController {
         Ok(())
     }
 
-    fn select_item(&mut self, row: usize, col: usize) -> Result<()> {
-        self.move_to(row, col)?;
-        self.system_control.mouse_click()?;
+    fn item_origin(&self, row: usize, col: usize) -> (f64, f64) {
+        let (row, col) = (row as u32, col as u32);
+        let origin = self.game_info.window.to_rect_f64().origin();
 
-        #[cfg(target_os = "macos")]
-        utils::sleep(20);
-
-        if self.wait_until_switched().is_err() {
-            self.ensure_game_foreground()?;
-            self.move_to(row, col)?;
-            self.system_control.mouse_click()?;
-            utils::sleep(self.config.scroll_delay.max(100) as u32);
+        let gap = self.window_info.item_gap_size;
+        let mut margin = self.window_info.scan_margin_pos;
+        let size = self.window_info.item_size;
+        if self.is_artifact {
+            margin = margin + self.window_info.artifact_panel_offset;
         }
-        Ok(())
+
+        let left = origin.x + margin.x + (gap.width + size.width) * (col as f64) + size.width / 2.0;
+        let top = origin.y
+            + margin.y
+            + self.scroll_offset_y
+            + (gap.height + size.height) * (row as f64)
+            + size.height / 4.0;
+
+        (left, top)
+    }
+
+    fn selected_border_scores(&mut self, row: usize, col: usize) -> Result<(f64, f64)> {
+        let origin = self.game_info.window.origin();
+        let pool = self.window_info.pool_rect;
+        self.system_control.mouse_move_to(
+            origin.x + pool.left as i32 + pool.width as i32 / 2,
+            origin.y + pool.top as i32 + pool.height as i32 / 2,
+        )?;
+        utils::sleep(40);
+
+        let (center_x, click_y) = self.item_origin(row, col);
+        let size = self.window_info.item_size;
+        let item_left = center_x - size.width / 2.0;
+        let item_top = click_y - size.height / 4.0;
+        let margin = 12;
+        let capture = self.capturer.capture_rect(Rect {
+            left: item_left.floor() as i32 - margin,
+            top: item_top.floor() as i32,
+            width: size.width.ceil() as i32 + margin * 2,
+            height: size.height.ceil() as i32,
+        })?;
+
+        // The bottom action bar covers much of the fifth visible row. Use the
+        // unobscured upper half so a selected partial card still has enough
+        // persistent vertical border to identify it after the cursor leaves.
+        let y_start = (size.height * 0.08).round().max(0.0) as u32;
+        let y_end = (size.height * 0.50).round().min(capture.height() as f64) as u32;
+        let expected_left = margin;
+        let expected_right = margin + size.width.round() as i32;
+        Ok((
+            best_vertical_border_score(&capture, expected_left, y_start, y_end),
+            best_vertical_border_score(&capture, expected_right, y_start, y_end),
+        ))
+    }
+
+    fn is_item_selected(&mut self, row: usize, col: usize) -> Result<bool> {
+        let (left_score, right_score) = self.selected_border_scores(row, col)?;
+        log::debug!(
+            "artifact selection border row {row}, column {col}: left={left_score:.3}, right={right_score:.3}"
+        );
+        Ok(left_score >= 0.30 && right_score >= 0.30)
+    }
+
+    fn move_to_selection(&mut self, row: usize, col: usize) -> Result<()> {
+        if col == 0 && row > 0 {
+            // Genshin can drop one axis of a large diagonal cursor warp.
+            // Split row transitions into a horizontal move followed by the
+            // vertical move so the first item of each row is actually selected.
+            self.move_to(row - 1, 0)?;
+        }
+        self.move_to(row, col)
+    }
+
+    fn select_item(&mut self, row: usize, col: usize) -> Result<()> {
+        for attempt in 0..3 {
+            self.move_to_selection(row, col)?;
+            self.system_control.mouse_click()?;
+
+            #[cfg(target_os = "macos")]
+            utils::sleep(20);
+
+            match self.wait_until_switched() {
+                Ok(()) => return Ok(()),
+                Err(_) if self.is_item_selected(row, col)? => {
+                    log::info!(
+                        "accepted visually identical artifact at row {row}, column {col} using the persistent selection border"
+                    );
+                    return Ok(());
+                },
+                Err(error) if attempt < 2 => {
+                    self.ensure_game_foreground()?;
+                    utils::sleep(self.config.scroll_delay.max(100) as u32);
+                    log::warn!(
+                        "artifact selection row {row}, column {col} did not change the detail panel on attempt {}; retrying: {error:#}",
+                        attempt + 1
+                    );
+                },
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to select repository item row {row}, column {col} after {} attempts",
+                            attempt + 1
+                        )
+                    });
+                },
+            }
+        }
+        unreachable!()
     }
 
     fn select_target_item(&mut self, row: usize, col: usize) -> Result<()> {
         for attempt in 0..2 {
-            self.move_to(row, col)?;
+            self.move_to_selection(row, col)?;
             self.system_control.mouse_click()?;
 
             #[cfg(target_os = "macos")]
             utils::sleep(20);
 
             if self.wait_until_switched().is_ok() {
+                return Ok(());
+            }
+            if self.is_item_selected(row, col)? {
                 return Ok(());
             }
             if attempt == 0 {
@@ -1692,8 +1792,9 @@ impl GenshinRepositoryScanController {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_scrollbar_geometry, effective_switch_timeout, safe_clickable_artifact_rows,
-        switch_frame_ready, GenshinRepositoryScanController, ScrollbarGeometry,
+        best_vertical_border_score, detect_scrollbar_geometry, effective_switch_timeout,
+        safe_clickable_artifact_rows, switch_frame_ready, GenshinRepositoryScanController,
+        ScrollbarGeometry,
     };
     use image::{Rgb, RgbImage};
     use yas::positioning::{Pos, Rect, Size};
@@ -1752,6 +1853,23 @@ mod tests {
             }
         }
         image
+    }
+
+    #[test]
+    fn persistent_white_card_edges_identify_a_selected_item() {
+        let mut image = RgbImage::from_pixel(140, 150, Rgb([180, 105, 50]));
+        for y in 18..132 {
+            image.put_pixel(8, y, Rgb([255, 255, 255]));
+            image.put_pixel(131, y, Rgb([250, 248, 245]));
+        }
+
+        let left = best_vertical_border_score(&image, 12, 15, 135);
+        let right = best_vertical_border_score(&image, 128, 15, 135);
+        assert!(left >= 0.9, "left={left}");
+        assert!(right >= 0.9, "right={right}");
+
+        let plain = RgbImage::from_pixel(140, 150, Rgb([233, 229, 220]));
+        assert_eq!(best_vertical_border_score(&plain, 12, 15, 135), 0.0);
     }
 
     #[test]
